@@ -1,4 +1,4 @@
-# Taper Gait Dashboard
+# Open Gait Dashboard
 
 React + Vite frontend for the open-gait Rust backend.
 

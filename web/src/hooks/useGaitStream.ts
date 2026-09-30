@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
+  CameraView,
   ConnectionStatus,
   GaitMetrics,
   MetricHistoryPoint,
@@ -25,6 +26,7 @@ export interface GaitStreamState {
   frameDataUrl: string | null
   frameWidth: number
   frameHeight: number
+  view: CameraView
   facing: 'left' | 'right' | 'auto' | null
   cmPerPx: number | null
   history: GaitMetrics[]
@@ -36,6 +38,7 @@ export interface GaitStreamState {
   error: string | null
   connect: () => void
   disconnect: () => void
+  setView: (view: CameraView) => void
   startRecording: () => void
   stopRecording: () => void
   clearRecording: () => void
@@ -51,6 +54,7 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
   const [frameDataUrl, setFrameDataUrl] = useState<string | null>(null)
   const [frameWidth, setFrameWidth] = useState(1280)
   const [frameHeight, setFrameHeight] = useState(720)
+  const [view, setViewState] = useState<CameraView>('side')
   const [facing, setFacing] = useState<'left' | 'right' | 'auto' | null>(null)
   const [cmPerPx, setCmPerPx] = useState<number | null>(null)
   const [history, setHistory] = useState<GaitMetrics[]>([])
@@ -69,8 +73,17 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
 
   const applyMessage = useCallback(
     (msg: MetricsMessage) => {
+      if (msg.type === 'session') {
+        if (msg.view) setViewState(msg.view)
+        if (msg.facing) setFacing(msg.facing)
+        return
+      }
+
       const m = msg.metrics
+      if (!m) return
       setLatest(m)
+      if (msg.view) setViewState(msg.view)
+      else if (m.view) setViewState(m.view)
       if (msg.frame_width && msg.frame_height) {
         setFrameWidth(msg.frame_width)
         setFrameHeight(msg.frame_height)
@@ -175,6 +188,10 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
           const raw = typeof ev.data === 'string' ? ev.data : null
           if (!raw) return
           const msg = JSON.parse(raw) as MetricsMessage
+          if (msg.type === 'session') {
+            applyMessage(msg)
+            return
+          }
           if (msg.type !== 'gait_metrics' || !msg.metrics) return
           scheduleApply(msg)
         } catch {
@@ -185,12 +202,20 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
       setStatus('error')
       setError(e instanceof Error ? e.message : 'WebSocket error')
     }
-  }, [disconnect, scheduleApply, url])
+  }, [applyMessage, disconnect, scheduleApply, url])
 
   useEffect(() => {
     if (autoConnect) connect()
     return () => disconnect()
   }, [autoConnect, connect, disconnect])
+
+  const setView = useCallback((next: CameraView) => {
+    setViewState(next)
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'set_view', view: next }))
+    }
+  }, [])
 
   const startRecording = useCallback(() => {
     recordingRef.current = true
@@ -219,6 +244,7 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
     frameDataUrl,
     frameWidth,
     frameHeight,
+    view,
     facing,
     cmPerPx,
     history,
@@ -230,6 +256,7 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
     error,
     connect,
     disconnect,
+    setView,
     startRecording,
     stopRecording,
     clearRecording,

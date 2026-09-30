@@ -1,25 +1,28 @@
 //! open-gait — real-time running gait analysis.
 //!
-//! Captures a side-view stream, runs pose estimation, computes biomechanics,
-//! and streams JSON metrics (+ optional JPEG preview) to a local WebSocket dashboard.
+//! Captures a camera stream, runs pose estimation, computes biomechanics for
+//! side / front / back views, and streams JSON (+ optional JPEG) to a local
+//! WebSocket dashboard. The dashboard can switch viewpoint at runtime.
 
 mod biomechanics;
 mod calibration;
 mod camera;
 mod pose;
 mod preview;
+mod view;
 
 use crate::biomechanics::GaitTracker;
 use crate::calibration::{Calibration, Facing};
 use crate::camera::{open_capture, CaptureConfig};
 use crate::pose::open_estimator;
 use crate::preview::encode_preview_jpeg;
+use crate::view::CameraView;
 use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -58,7 +61,11 @@ struct Args {
     #[arg(long)]
     detector: Option<String>,
 
-    /// Runner facing direction in the image: left | right | auto.
+    /// Camera viewpoint: side | front | back (overridable from the web UI).
+    #[arg(long, default_value = "side")]
+    view: String,
+
+    /// Runner facing direction for side view: left | right | auto.
     #[arg(long, default_value = "auto")]
     facing: String,
 
@@ -66,11 +73,11 @@ struct Args {
     #[arg(long)]
     height_cm: Option<f32>,
 
-    /// JPEG preview stream rate over WebSocket (0 = off). Metrics still run at capture FPS.
+    /// JPEG preview stream rate over WebSocket (0 = off).
     #[arg(long, default_value_t = 12)]
     preview_fps: u32,
 
-    /// Max width of JPEG preview frames (keeps WS payload small).
+    /// Max width of JPEG preview frames.
     #[arg(long, default_value_t = 640)]
     preview_width: u32,
 
@@ -95,6 +102,14 @@ struct Args {
     no_ws: bool,
 }
 
+/// Live session knobs shared between the WS server and the capture pipeline.
+#[derive(Debug, Clone)]
+struct SessionConfig {
+    view: CameraView,
+    facing: Facing,
+    height_cm: Option<f32>,
+}
+
 /// Envelope sent to dashboards over WebSocket / stdout.
 #[derive(Debug, Clone, Serialize)]
 struct MetricsMessage {
@@ -103,11 +118,20 @@ struct MetricsMessage {
     metrics: biomechanics::GaitMetrics,
     frame_width: u32,
     frame_height: u32,
+    view: CameraView,
     facing: Facing,
     cm_per_px: Option<f32>,
-    /// Base64 JPEG (no data-URL prefix). Omitted on stdout and when throttled.
     #[serde(skip_serializing_if = "Option::is_none")]
     frame: Option<String>,
+}
+
+/// Client → server commands (from the Open Gait Dashboard).
+#[derive(Debug, Deserialize)]
+struct ClientCommand {
+    #[serde(rename = "type")]
+    kind: String,
+    view: Option<String>,
+    facing: Option<String>,
 }
 
 #[tokio::main]
@@ -121,18 +145,26 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    let view = CameraView::parse(&args.view)
+        .ok_or_else(|| anyhow::anyhow!("invalid --view {:?} (use side|front|back)", args.view))?;
     let facing = Facing::parse(&args.facing).ok_or_else(|| {
         anyhow::anyhow!("invalid --facing {:?} (use left|right|auto)", args.facing)
     })?;
-    let calibration = Calibration::new(facing, args.height_cm);
+
+    let session = Arc::new(Mutex::new(SessionConfig {
+        view,
+        facing,
+        height_cm: args.height_cm,
+    }));
 
     let (tx, _) = broadcast::channel::<String>(256);
 
     if !args.no_ws {
         let addr: SocketAddr = args.ws_addr.parse()?;
         let tx_ws = tx.clone();
+        let session_ws = Arc::clone(&session);
         tokio::spawn(async move {
-            if let Err(e) = run_ws_server(addr, tx_ws).await {
+            if let Err(e) = run_ws_server(addr, tx_ws, session_ws).await {
                 warn!("websocket server stopped: {e:#}");
             }
         });
@@ -155,6 +187,7 @@ async fn main() -> Result<()> {
     let preview_width = args.preview_width;
     let preview_quality = args.preview_quality;
     let tx_pipe = tx.clone();
+    let session_pipe = Arc::clone(&session);
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
     std::thread::Builder::new()
@@ -165,7 +198,7 @@ async fn main() -> Result<()> {
                 live,
                 model.as_deref(),
                 detector.as_deref(),
-                calibration,
+                session_pipe,
                 window_secs,
                 stdout_json,
                 preview_fps,
@@ -195,7 +228,7 @@ fn run_pipeline(
     live: bool,
     model: Option<&str>,
     detector: Option<&str>,
-    mut calibration: Calibration,
+    session: Arc<Mutex<SessionConfig>>,
     window_secs: f64,
     stdout_json: bool,
     preview_fps: u32,
@@ -206,6 +239,13 @@ fn run_pipeline(
     let mut source = open_capture(capture_cfg, live)?;
     let mut estimator = open_estimator(model, detector)?;
     let mut tracker = GaitTracker::new(window_secs);
+
+    let (initial_facing, initial_height) = {
+        let s = session.lock().unwrap();
+        (s.facing, s.height_cm)
+    };
+    let mut calibration = Calibration::new(initial_facing, initial_height);
+
     let pipeline_start = Instant::now();
     let preview_period = if preview_fps == 0 {
         None
@@ -215,18 +255,26 @@ fn run_pipeline(
     let mut next_preview = Instant::now();
 
     info!(
-        "pipeline started ({}x{} @ {} FPS, live={live}, facing={:?}, height_cm={:?}, preview_fps={preview_fps})",
+        "pipeline started ({}x{} @ {} FPS, live={live}, view={:?}, facing={:?}, preview_fps={preview_fps})",
         source.config().width,
         source.config().height,
         source.config().fps,
-        calibration.facing,
-        calibration.height_cm
+        session.lock().unwrap().view,
+        initial_facing,
     );
 
     while let Some(frame) = source.next_frame()? {
+        let (view, facing) = {
+            let s = session.lock().unwrap();
+            (s.view, s.facing)
+        };
+        if calibration.facing != facing {
+            calibration.facing = facing;
+        }
+
         let pose = estimator.estimate(&frame, pipeline_start)?;
         calibration.update(&pose);
-        let metrics = tracker.update(&pose, Some(&calibration));
+        let metrics = tracker.update(&pose, Some(&calibration), view);
 
         let include_preview = preview_period.is_some_and(|p| {
             let now = Instant::now();
@@ -255,14 +303,15 @@ fn run_pipeline(
             metrics,
             frame_width: frame.width,
             frame_height: frame.height,
+            view,
             facing: calibration.resolved_facing,
             cm_per_px: calibration.cm_per_px,
-            frame: frame_b64.clone(),
+            frame: frame_b64,
         };
 
         if stdout_json {
             let mut stdout_msg = msg.clone();
-            stdout_msg.frame = None; // keep stdout lean
+            stdout_msg.frame = None;
             println!("{}", serde_json::to_string(&stdout_msg)?);
         }
 
@@ -272,7 +321,11 @@ fn run_pipeline(
     Ok(())
 }
 
-async fn run_ws_server(addr: SocketAddr, tx: broadcast::Sender<String>) -> Result<()> {
+async fn run_ws_server(
+    addr: SocketAddr,
+    tx: broadcast::Sender<String>,
+    session: Arc<Mutex<SessionConfig>>,
+) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let tx = Arc::new(tx);
 
@@ -280,18 +333,36 @@ async fn run_ws_server(addr: SocketAddr, tx: broadcast::Sender<String>) -> Resul
         let (stream, peer) = listener.accept().await?;
         info!("websocket client connected: {peer}");
         let tx = Arc::clone(&tx);
+        let session = Arc::clone(&session);
         tokio::spawn(async move {
-            if let Err(e) = handle_client(stream, tx).await {
+            if let Err(e) = handle_client(stream, tx, session).await {
                 warn!("websocket client {peer} error: {e:#}");
             }
         });
     }
 }
 
-async fn handle_client(stream: TcpStream, tx: Arc<broadcast::Sender<String>>) -> Result<()> {
+async fn handle_client(
+    stream: TcpStream,
+    tx: Arc<broadcast::Sender<String>>,
+    session: Arc<Mutex<SessionConfig>>,
+) -> Result<()> {
     let ws = accept_async(stream).await?;
     let (mut sink, mut incoming) = ws.split();
     let mut rx = tx.subscribe();
+
+    // Tell the client the current view on connect.
+    let hello = {
+        let s = session.lock().unwrap();
+        serde_json::json!({
+            "type": "session",
+            "view": s.view,
+            "facing": s.facing,
+        })
+        .to_string()
+    };
+    sink.send(tokio_tungstenite::tungstenite::Message::Text(hello.into()))
+        .await?;
 
     loop {
         tokio::select! {
@@ -308,6 +379,9 @@ async fn handle_client(stream: TcpStream, tx: Arc<broadcast::Sender<String>>) ->
             client = incoming.next() => {
                 match client {
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => break,
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                        apply_client_command(&text, &session);
+                    }
                     Some(Ok(_)) => {}
                     Some(Err(e)) => return Err(e.into()),
                 }
@@ -315,4 +389,22 @@ async fn handle_client(stream: TcpStream, tx: Arc<broadcast::Sender<String>>) ->
         }
     }
     Ok(())
+}
+
+fn apply_client_command(text: &str, session: &Mutex<SessionConfig>) {
+    let Ok(cmd) = serde_json::from_str::<ClientCommand>(text) else {
+        return;
+    };
+    if cmd.kind != "set_view" && cmd.kind != "set_config" {
+        return;
+    }
+    let mut s = session.lock().unwrap();
+    if let Some(v) = cmd.view.as_deref().and_then(CameraView::parse) {
+        info!("session view → {}", v.as_str());
+        s.view = v;
+    }
+    if let Some(f) = cmd.facing.as_deref().and_then(Facing::parse) {
+        info!("session facing → {f:?}");
+        s.facing = f;
+    }
 }

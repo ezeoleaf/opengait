@@ -1,22 +1,24 @@
-# Roadmap — Taper Gait (web)
+# Roadmap — Open Gait Dashboard (web)
 
 React + Vite dashboard for open-gait: WebSocket metrics, skeleton overlay, recording, debrief.
 
 ## Done
 
 - [x] Vite + React + TypeScript + Tailwind v4 scaffold
-- [x] Dark Taper aesthetic (`#0F172A` / `#1E293B`, neon cyan/green overlays)
+- [x] Dark aesthetic (`#0F172A` / `#1E293B`, neon cyan/green overlays)
 - [x] `useGaitStream` — WS client, RAF-coalesced updates, reconnect
 - [x] Live metric cards: cadence, overstride, knee flexion @ IC, torso lean
+- [x] Front / back metric cards: hip drop, lateral lean, valgus, crossover
+- [x] Header view selector (Side / Front / Back → WS `set_view`)
 - [x] Status badges (Optimal / Caution / High Risk) + cadence sparkline
 - [x] Canvas skeleton overlay (~60 FPS): bones, angle arcs, overstride guide
 - [x] Source resolution from backend `frame_width` / `frame_height`
 - [x] Run recording (≤30s) with slow-mo scrubber (0.1x–1x) + frame step
 - [x] Foot-contact snap navigation
-- [x] Generate gait report (PDF + JSON) + Gotaper.app export CTA
+- [x] Generate gait report (PDF + JSON)
 - [x] Live camera preview under the skeleton (JPEG from backend WS)
 - [x] Detector ROI rectangle on the canvas (debug alignment)
-- [x] Metric history charts (knee / lean / overstride)
+- [x] Metric history charts (knee / lean / overstride; frontal set when front/back)
 
 ## Next
 

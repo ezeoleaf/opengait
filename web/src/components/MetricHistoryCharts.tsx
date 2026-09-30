@@ -1,9 +1,10 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import type { MetricHistoryPoint } from '../types/gait'
+import type { CameraView, GaitMetrics, MetricHistoryPoint } from '../types/gait'
 import { flexionFromInterior } from '../lib/thresholds'
 
 interface MetricHistoryChartsProps {
   history: MetricHistoryPoint[]
+  view: CameraView
 }
 
 function ChartCard({
@@ -70,57 +71,90 @@ function ChartCard({
   )
 }
 
-export function MetricHistoryCharts({ history }: MetricHistoryChartsProps) {
+export function MetricHistoryCharts({ history, view }: MetricHistoryChartsProps) {
+  const frontal = view === 'front' || view === 'back'
+
   return (
     <section className="rounded-lg border border-line bg-panel/50 p-4">
       <div className="mb-3">
         <h2 className="font-display text-lg font-semibold tracking-tight">Session trends</h2>
         <p className="text-sm text-mute">
-          Rolling knee flexion, torso lean, and overstride over the live stream.
+          {frontal
+            ? 'Rolling hip drop, lateral lean, valgus, and crossover over the live stream.'
+            : 'Rolling knee flexion, torso lean, and overstride over the live stream.'}
         </p>
       </div>
-      <div className="grid gap-3 md:grid-cols-3">
-        <ChartCard
-          title="Knee flexion"
-          color="#4ade80"
-          dataKey="knee"
-          unit="°"
-          data={history}
-        />
-        <ChartCard title="Torso lean" color="#fbbf24" dataKey="lean" unit="°" data={history} />
-        <ChartCard
-          title="Overstride"
-          color="#f87171"
-          dataKey="overstride"
-          unit="px"
-          data={history}
-        />
-      </div>
+      {frontal ? (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <ChartCard title="Hip drop" color="#a78bfa" dataKey="hipDrop" unit="°" data={history} />
+          <ChartCard
+            title="Lateral lean"
+            color="#fbbf24"
+            dataKey="lateralLean"
+            unit="°"
+            data={history}
+          />
+          <ChartCard title="Knee valgus" color="#f87171" dataKey="valgus" unit="°" data={history} />
+          <ChartCard
+            title="Crossover"
+            color="#22d3ee"
+            dataKey="crossover"
+            unit="px"
+            data={history}
+          />
+        </div>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-3">
+          <ChartCard
+            title="Knee flexion"
+            color="#4ade80"
+            dataKey="knee"
+            unit="°"
+            data={history}
+          />
+          <ChartCard title="Torso lean" color="#fbbf24" dataKey="lean" unit="°" data={history} />
+          <ChartCard
+            title="Overstride"
+            color="#f87171"
+            dataKey="overstride"
+            unit="px"
+            data={history}
+          />
+        </div>
+      )}
     </section>
   )
 }
 
 /** Build a history point from the latest metrics sample. */
-export function metricHistoryFromGait(m: {
-  timestamp_secs: number
-  left_knee_flexion_deg: number | null
-  right_knee_flexion_deg: number | null
-  left_foot_strike: boolean
-  right_foot_strike: boolean
-  torso_lean_deg: number | null
-  left_overstride: { ahead_px?: number; ankle_hip_delta_x: number } | null
-  right_overstride: { ahead_px?: number; ankle_hip_delta_x: number } | null
-}): MetricHistoryPoint {
+export function metricHistoryFromGait(m: GaitMetrics): MetricHistoryPoint {
   const kneeInterior = m.left_foot_strike
     ? m.left_knee_flexion_deg
     : m.right_foot_strike
       ? m.right_knee_flexion_deg
       : (m.left_knee_flexion_deg ?? m.right_knee_flexion_deg)
   const over = m.left_overstride ?? m.right_overstride
+  const valgusL = m.left_knee_valgus_deg ?? null
+  const valgusR = m.right_knee_valgus_deg ?? null
+  const valgus =
+    valgusL != null && valgusR != null
+      ? Math.abs(valgusL) > Math.abs(valgusR)
+        ? valgusL
+        : valgusR
+      : (valgusL ?? valgusR)
+  const crossL = m.left_crossover_px ?? null
+  const crossR = m.right_crossover_px ?? null
+  const crossover =
+    crossL != null && crossR != null ? Math.max(crossL, crossR) : (crossL ?? crossR)
+
   return {
     t: m.timestamp_secs,
     knee: flexionFromInterior(kneeInterior),
     lean: m.torso_lean_deg,
     overstride: over ? (over.ahead_px ?? over.ankle_hip_delta_x) : null,
+    hipDrop: m.hip_drop_deg ?? null,
+    lateralLean: m.trunk_lateral_lean_deg ?? null,
+    valgus,
+    crossover,
   }
 }

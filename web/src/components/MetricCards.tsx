@@ -1,11 +1,15 @@
 import type { ReactNode } from 'react'
 import { Area, AreaChart, ResponsiveContainer, YAxis } from 'recharts'
-import type { GaitMetrics } from '../types/gait'
+import type { CameraView, GaitMetrics } from '../types/gait'
 import { StatusBadge } from './StatusBadge'
 import {
   cadenceStatus,
+  crossoverStatus,
   flexionFromInterior,
+  hipDropStatus,
   kneeFlexionStatus,
+  kneeValgusStatus,
+  lateralLeanStatus,
   overstrideStatus,
   torsoLeanStatus,
 } from '../lib/thresholds'
@@ -13,6 +17,7 @@ import {
 interface MetricCardsProps {
   metrics: GaitMetrics | null
   cadenceHistory: Array<{ t: number; spm: number }>
+  view: CameraView
 }
 
 function Card({
@@ -46,17 +51,15 @@ function Card({
   )
 }
 
-export function MetricCards({ metrics, cadenceHistory }: MetricCardsProps) {
+function fmtDeg(v: number | null | undefined, signed = true): string {
+  if (v == null) return '—'
+  const s = signed && v > 0 ? '+' : ''
+  return `${s}${v.toFixed(1)}`
+}
+
+export function MetricCards({ metrics, cadenceHistory, view }: MetricCardsProps) {
+  const frontal = view === 'front' || view === 'back'
   const cadence = metrics?.cadence_spm ?? null
-  const over = metrics?.left_overstride ?? metrics?.right_overstride ?? null
-  const kneeInterior =
-    metrics?.left_foot_strike
-      ? metrics.left_knee_flexion_deg
-      : metrics?.right_foot_strike
-        ? metrics.right_knee_flexion_deg
-        : (metrics?.left_knee_flexion_deg ?? metrics?.right_knee_flexion_deg)
-  const kneeFlex = flexionFromInterior(kneeInterior)
-  const lean = metrics?.torso_lean_deg ?? null
 
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
@@ -85,6 +88,23 @@ export function MetricCards({ metrics, cadenceHistory }: MetricCardsProps) {
         </div>
       </Card>
 
+      {frontal ? <FrontalCards metrics={metrics} /> : <SagittalCards metrics={metrics} />}
+    </div>
+  )
+}
+
+function SagittalCards({ metrics }: { metrics: GaitMetrics | null }) {
+  const over = metrics?.left_overstride ?? metrics?.right_overstride ?? null
+  const kneeInterior = metrics?.left_foot_strike
+    ? metrics.left_knee_flexion_deg
+    : metrics?.right_foot_strike
+      ? metrics.right_knee_flexion_deg
+      : (metrics?.left_knee_flexion_deg ?? metrics?.right_knee_flexion_deg)
+  const kneeFlex = flexionFromInterior(kneeInterior)
+  const lean = metrics?.torso_lean_deg ?? null
+
+  return (
+    <>
       <Card
         label="Overstride"
         value={
@@ -124,6 +144,73 @@ export function MetricCards({ metrics, cadenceHistory }: MetricCardsProps) {
               : 'into run direction'
         }
       />
-    </div>
+    </>
+  )
+}
+
+function FrontalCards({ metrics }: { metrics: GaitMetrics | null }) {
+  const hipDrop = metrics?.hip_drop_deg ?? null
+  const lateral = metrics?.trunk_lateral_lean_deg ?? null
+  const valgusL = metrics?.left_knee_valgus_deg ?? null
+  const valgusR = metrics?.right_knee_valgus_deg ?? null
+  const valgus =
+    valgusL != null && valgusR != null
+      ? Math.abs(valgusL) > Math.abs(valgusR)
+        ? valgusL
+        : valgusR
+      : (valgusL ?? valgusR)
+  const crossL = metrics?.left_crossover_px ?? null
+  const crossR = metrics?.right_crossover_px ?? null
+  const crossover =
+    crossL != null && crossR != null ? Math.max(crossL, crossR) : (crossL ?? crossR)
+
+  return (
+    <>
+      <Card
+        label="Hip Drop"
+        value={fmtDeg(hipDrop)}
+        unit="°"
+        status={hipDropStatus(hipDrop)}
+        detail={
+          hipDrop == null
+            ? 'Pelvic obliquity'
+            : hipDrop > 0
+              ? 'right hip lower'
+              : 'left hip lower'
+        }
+      />
+
+      <Card
+        label="Trunk Lateral Lean"
+        value={fmtDeg(lateral)}
+        unit="°"
+        status={lateralLeanStatus(lateral)}
+        detail="Frontal lean vs vertical"
+      />
+
+      <Card
+        label="Knee Valgus"
+        value={fmtDeg(valgus)}
+        unit="°"
+        status={kneeValgusStatus(valgus)}
+        detail={
+          valgusL != null || valgusR != null
+            ? `L ${fmtDeg(valgusL)} · R ${fmtDeg(valgusR)}`
+            : 'Medial knee collapse'
+        }
+      />
+
+      <Card
+        label="Crossover"
+        value={crossover != null ? crossover.toFixed(0) : '—'}
+        unit="px"
+        status={crossoverStatus(crossover)}
+        detail={
+          crossL != null || crossR != null
+            ? `L ${crossL?.toFixed(0) ?? '—'} · R ${crossR?.toFixed(0) ?? '—'} past midline`
+            : 'Ankle vs mid-pelvis'
+        }
+      />
+    </>
   )
 }

@@ -2,7 +2,11 @@
 //!
 //! All functions operate on 2D keypoints in image space (origin top-left,
 //! Y increasing downward). Angles are returned in degrees.
+//!
+//! - **Side** view: sagittal metrics (knee flexion, torso lean, overstride).
+//! - **Front / back** view: frontal-plane metrics (hip drop, knee valgus, crossover).
 
+use crate::view::CameraView;
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
@@ -132,11 +136,28 @@ impl PoseFrame {
 pub struct GaitMetrics {
     pub frame_index: u64,
     pub timestamp_secs: f64,
+    /// Active camera viewpoint used for this sample.
+    pub view: CameraView,
+    // --- Sagittal (side) ---
     pub left_knee_flexion_deg: Option<f32>,
     pub right_knee_flexion_deg: Option<f32>,
     pub torso_lean_deg: Option<f32>,
     pub left_overstride: Option<OverstrideSample>,
     pub right_overstride: Option<OverstrideSample>,
+    // --- Frontal (front / back) ---
+    /// Pelvic obliquity in degrees. Positive = right hip lower than left.
+    pub hip_drop_deg: Option<f32>,
+    /// Shoulder line tilt. Positive = right shoulder lower than left.
+    pub shoulder_drop_deg: Option<f32>,
+    /// Trunk lean in the frontal plane vs vertical. Positive = lean toward +X.
+    pub trunk_lateral_lean_deg: Option<f32>,
+    /// Knee medial collapse (valgus). Positive = knee toward midline.
+    pub left_knee_valgus_deg: Option<f32>,
+    pub right_knee_valgus_deg: Option<f32>,
+    /// Ankle X relative to mid-pelvis; positive = crossed toward / past midline.
+    pub left_crossover_px: Option<f32>,
+    pub right_crossover_px: Option<f32>,
+    // --- Shared ---
     pub cadence_spm: Option<f32>,
     pub left_foot_strike: bool,
     pub right_foot_strike: bool,
@@ -190,6 +211,7 @@ impl GaitTracker {
         &mut self,
         pose: &PoseFrame,
         calibration: Option<&crate::calibration::Calibration>,
+        view: CameraView,
     ) -> GaitMetrics {
         let conf = 0.3;
 
@@ -207,29 +229,44 @@ impl GaitTracker {
             .filter(|((h, k), a)| h.is_visible(conf) && k.is_visible(conf) && a.is_visible(conf))
             .map(|((h, k), a)| angle_degrees(h.as_vec2(), k.as_vec2(), a.as_vec2()));
 
-        let torso_lean = pose
-            .mid_hip()
-            .zip(pose.mid_shoulder())
-            .map(|(hip, shoulder)| {
-                let raw = torso_lean_degrees(hip, shoulder);
-                match calibration {
-                    Some(c) => c.signed_torso_lean(raw),
-                    None => raw,
-                }
-            });
+        let torso_lean = if view == CameraView::Side {
+            pose.mid_hip()
+                .zip(pose.mid_shoulder())
+                .map(|(hip, shoulder)| {
+                    let raw = torso_lean_degrees(hip, shoulder);
+                    match calibration {
+                        Some(c) => c.signed_torso_lean(raw),
+                        None => raw,
+                    }
+                })
+        } else {
+            None
+        };
 
         let left_strike = self.detect_strike(Side::Left, pose);
         let right_strike = self.detect_strike(Side::Right, pose);
 
-        let left_overstride = if left_strike {
-            compute_overstride(pose, Side::Left, conf, calibration)
+        let (left_overstride, right_overstride) = if view == CameraView::Side {
+            (
+                if left_strike {
+                    compute_overstride(pose, Side::Left, conf, calibration)
+                } else {
+                    None
+                },
+                if right_strike {
+                    compute_overstride(pose, Side::Right, conf, calibration)
+                } else {
+                    None
+                },
+            )
         } else {
-            None
+            (None, None)
         };
-        let right_overstride = if right_strike {
-            compute_overstride(pose, Side::Right, conf, calibration)
+
+        let frontal = if view.is_frontal() {
+            compute_frontal_metrics(pose, conf)
         } else {
-            None
+            FrontalMetrics::default()
         };
 
         if left_strike {
@@ -249,11 +286,19 @@ impl GaitTracker {
         GaitMetrics {
             frame_index: pose.frame_index,
             timestamp_secs: pose.timestamp_secs,
+            view,
             left_knee_flexion_deg: left_knee,
             right_knee_flexion_deg: right_knee,
             torso_lean_deg: torso_lean,
             left_overstride,
             right_overstride,
+            hip_drop_deg: frontal.hip_drop_deg,
+            shoulder_drop_deg: frontal.shoulder_drop_deg,
+            trunk_lateral_lean_deg: frontal.trunk_lateral_lean_deg,
+            left_knee_valgus_deg: frontal.left_knee_valgus_deg,
+            right_knee_valgus_deg: frontal.right_knee_valgus_deg,
+            left_crossover_px: frontal.left_crossover_px,
+            right_crossover_px: frontal.right_crossover_px,
             cadence_spm,
             left_foot_strike: left_strike,
             right_foot_strike: right_strike,
@@ -397,6 +442,113 @@ pub fn overstride_ratio(hip: Vec2, ankle: Vec2) -> OverstrideSample {
     }
 }
 
+#[derive(Default)]
+struct FrontalMetrics {
+    hip_drop_deg: Option<f32>,
+    shoulder_drop_deg: Option<f32>,
+    trunk_lateral_lean_deg: Option<f32>,
+    left_knee_valgus_deg: Option<f32>,
+    right_knee_valgus_deg: Option<f32>,
+    left_crossover_px: Option<f32>,
+    right_crossover_px: Option<f32>,
+}
+
+fn compute_frontal_metrics(pose: &PoseFrame, conf: f32) -> FrontalMetrics {
+    let mut out = FrontalMetrics::default();
+
+    if let (Some(lh), Some(rh)) = (
+        pose.hip(Side::Left).filter(|k| k.is_visible(conf)),
+        pose.hip(Side::Right).filter(|k| k.is_visible(conf)),
+    ) {
+        let dx = (rh.x - lh.x).abs().max(1.0);
+        // Positive = right hip lower (larger Y).
+        out.hip_drop_deg = Some(((rh.y - lh.y) / dx).atan().to_degrees());
+    }
+
+    if let (Some(ls), Some(rs)) = (
+        pose.shoulder(Side::Left).filter(|k| k.is_visible(conf)),
+        pose.shoulder(Side::Right).filter(|k| k.is_visible(conf)),
+    ) {
+        let dx = (rs.x - ls.x).abs().max(1.0);
+        out.shoulder_drop_deg = Some(((rs.y - ls.y) / dx).atan().to_degrees());
+    }
+
+    if let (Some(hip), Some(shoulder)) = (pose.mid_hip(), pose.mid_shoulder()) {
+        out.trunk_lateral_lean_deg = Some(trunk_lateral_lean_degrees(hip, shoulder));
+    }
+
+    let mid_x = pose.mid_hip().map(|v| v.x);
+    out.left_knee_valgus_deg = knee_valgus_deg(pose, Side::Left, conf, mid_x);
+    out.right_knee_valgus_deg = knee_valgus_deg(pose, Side::Right, conf, mid_x);
+
+    if let Some(mx) = mid_x {
+        out.left_crossover_px = pose
+            .ankle(Side::Left)
+            .filter(|k| k.is_visible(conf))
+            .map(|a| crossover_px(a.x, mx, Side::Left));
+        out.right_crossover_px = pose
+            .ankle(Side::Right)
+            .filter(|k| k.is_visible(conf))
+            .map(|a| crossover_px(a.x, mx, Side::Right));
+    }
+
+    out
+}
+
+/// Frontal trunk lean: angle between vertical (−Y) and hip→shoulder, signed by X.
+pub fn trunk_lateral_lean_degrees(hip: Vec2, shoulder: Vec2) -> f32 {
+    let torso = shoulder - hip;
+    if torso.length_squared() < 1e-12 {
+        return 0.0;
+    }
+    let vertical = Vec2::new(0.0, -1.0);
+    let torso_n = torso.normalize();
+    let cos = vertical.dot(torso_n).clamp(-1.0, 1.0);
+    let mut deg = cos.acos().to_degrees();
+    if torso.x < 0.0 {
+        deg = -deg;
+    }
+    deg
+}
+
+/// Positive = knee collapsed toward the anatomical midline (valgus).
+pub fn knee_valgus_deg(
+    pose: &PoseFrame,
+    side: Side,
+    conf: f32,
+    mid_x: Option<f32>,
+) -> Option<f32> {
+    let hip = pose.hip(side).filter(|k| k.is_visible(conf))?;
+    let knee = pose.knee(side).filter(|k| k.is_visible(conf))?;
+    let ankle = pose.ankle(side).filter(|k| k.is_visible(conf))?;
+    let mid = mid_x?;
+
+    let h = hip.as_vec2();
+    let k = knee.as_vec2();
+    let a = ankle.as_vec2();
+    let line = a - h;
+    let len2 = line.length_squared().max(1e-6);
+    let t = ((k - h).dot(line) / len2).clamp(0.0, 1.0);
+    let proj = h + line * t;
+    let offset_x = k.x - proj.x;
+    // Left limb: midline is to the right (+X) → medial offset is +offset_x.
+    // Right limb: midline is to the left (−X) → medial offset is −offset_x.
+    let medial = match side {
+        Side::Left => offset_x,
+        Side::Right => -offset_x,
+    };
+    let _ = mid; // reserved for future midline-aware scaling
+    Some((medial / line.length().max(1.0)).atan().to_degrees())
+}
+
+/// Positive when the ankle has crossed toward / past the pelvic midline.
+pub fn crossover_px(ankle_x: f32, mid_x: f32, side: Side) -> f32 {
+    match side {
+        Side::Left => ankle_x - mid_x,  // left ankle moving right past mid → positive
+        Side::Right => mid_x - ankle_x, // right ankle moving left past mid → positive
+    }
+}
+
 fn compute_overstride(
     pose: &PoseFrame,
     side: Side,
@@ -457,6 +609,7 @@ pub fn detect_vertical_minima(samples: &[(f64, f32)], min_prominence: f32) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::CameraView;
     use approx::assert_relative_eq;
 
     #[test]
@@ -570,11 +723,49 @@ mod tests {
                 landmarks: landmarks.clone(),
                 roi: None,
             };
-            let m = tracker.update(&pose, None);
+            let m = tracker.update(&pose, None, CameraView::Side);
             if m.left_foot_strike {
                 saw_strike = true;
             }
         }
         assert!(saw_strike, "expected foot strike when ankle reverse at bottom");
+    }
+
+    #[test]
+    fn crossover_positive_when_past_midline() {
+        assert!(crossover_px(110.0, 100.0, Side::Left) > 0.0);
+        assert!(crossover_px(90.0, 100.0, Side::Right) > 0.0);
+    }
+
+    #[test]
+    fn trunk_lateral_lean_signs_with_x() {
+        let hip = Vec2::new(100.0, 200.0);
+        let shoulder = Vec2::new(120.0, 100.0);
+        assert!(trunk_lateral_lean_degrees(hip, shoulder) > 0.0);
+    }
+
+    #[test]
+    fn frontal_view_fills_hip_drop() {
+        let mut landmarks = vec![Keypoint::new(0.0, 0.0, 0.0); 33];
+        landmarks[Landmark::LeftHip as usize] = Keypoint::new(80.0, 100.0, 1.0);
+        landmarks[Landmark::RightHip as usize] = Keypoint::new(120.0, 110.0, 1.0);
+        landmarks[Landmark::LeftShoulder as usize] = Keypoint::new(85.0, 40.0, 1.0);
+        landmarks[Landmark::RightShoulder as usize] = Keypoint::new(115.0, 40.0, 1.0);
+        landmarks[Landmark::LeftKnee as usize] = Keypoint::new(80.0, 150.0, 1.0);
+        landmarks[Landmark::RightKnee as usize] = Keypoint::new(120.0, 150.0, 1.0);
+        landmarks[Landmark::LeftAnkle as usize] = Keypoint::new(80.0, 200.0, 1.0);
+        landmarks[Landmark::RightAnkle as usize] = Keypoint::new(120.0, 200.0, 1.0);
+        let pose = PoseFrame {
+            frame_index: 0,
+            timestamp_secs: 0.0,
+            landmarks,
+            roi: None,
+        };
+        let mut tracker = GaitTracker::new(5.0);
+        let m = tracker.update(&pose, None, CameraView::Front);
+        assert!(m.hip_drop_deg.is_some());
+        assert!(m.hip_drop_deg.unwrap() > 0.0); // right hip lower
+        assert!(m.torso_lean_deg.is_none()); // sagittal lean unused in front view
+        assert_eq!(m.view, CameraView::Front);
     }
 }

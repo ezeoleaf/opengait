@@ -87,12 +87,12 @@ export function buildSessionReport(
   }
 }
 
-export function downloadJsonReport(report: SessionReport, filename = 'taper-gait-report.json') {
+export function downloadJsonReport(report: SessionReport, filename = 'open-gait-report.json') {
   const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
   triggerDownload(blob, filename)
 }
 
-export function downloadPdfReport(report: SessionReport, filename = 'taper-gait-report.pdf') {
+export function downloadPdfReport(report: SessionReport, filename = 'open-gait-report.pdf') {
   const doc = new jsPDF()
   let y = 20
   const line = (text: string, size = 11) => {
@@ -101,7 +101,7 @@ export function downloadPdfReport(report: SessionReport, filename = 'taper-gait-
     y += size * 0.55 + 4
   }
 
-  line('Taper Gait — Session Report', 18)
+  line('Open Gait Dashboard — Session Report', 18)
   line(`Generated ${report.generatedAt}`, 10)
   y += 4
   line(`Duration: ${report.durationSecs.toFixed(1)} s`)
@@ -125,7 +125,6 @@ export function downloadPdfReport(report: SessionReport, filename = 'taper-gait-
     }
   }
   y += 8
-  line('Export session data to Gotaper.app for longitudinal coaching.', 10)
   doc.save(filename)
 }
 

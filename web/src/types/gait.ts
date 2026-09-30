@@ -1,5 +1,7 @@
 /** BlazePose-compatible landmark + metrics types matching the Rust backend. */
 
+export type CameraView = 'side' | 'front' | 'back'
+
 export interface Keypoint {
   x: number
   y: number
@@ -26,11 +28,19 @@ export interface DetectorRoi {
 export interface GaitMetrics {
   frame_index: number
   timestamp_secs: number
+  view?: CameraView
   left_knee_flexion_deg: number | null
   right_knee_flexion_deg: number | null
   torso_lean_deg: number | null
   left_overstride: OverstrideSample | null
   right_overstride: OverstrideSample | null
+  hip_drop_deg?: number | null
+  shoulder_drop_deg?: number | null
+  trunk_lateral_lean_deg?: number | null
+  left_knee_valgus_deg?: number | null
+  right_knee_valgus_deg?: number | null
+  left_crossover_px?: number | null
+  right_crossover_px?: number | null
   cadence_spm: number | null
   left_foot_strike: boolean
   right_foot_strike: boolean
@@ -43,13 +53,18 @@ export interface MetricHistoryPoint {
   knee: number | null
   lean: number | null
   overstride: number | null
+  hipDrop: number | null
+  lateralLean: number | null
+  valgus: number | null
+  crossover: number | null
 }
 
 export interface MetricsMessage {
-  type: 'gait_metrics'
-  metrics: GaitMetrics
+  type: 'gait_metrics' | 'session'
+  metrics?: GaitMetrics
   frame_width?: number
   frame_height?: number
+  view?: CameraView
   facing?: 'left' | 'right' | 'auto'
   cm_per_px?: number | null
   /** Base64 JPEG (no data-URL prefix). */
@@ -82,7 +97,7 @@ export const Landmark = {
   RightFootIndex: 32,
 } as const
 
-/** Skeleton bone pairs for the running side-view overlay. */
+/** Skeleton bone pairs for the overlay (works for side and frontal). */
 export const SKELETON_EDGES: Array<[number, number]> = [
   [Landmark.LeftShoulder, Landmark.RightShoulder],
   [Landmark.LeftShoulder, Landmark.LeftHip],

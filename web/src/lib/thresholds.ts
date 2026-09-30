@@ -35,6 +35,38 @@ export function torsoLeanStatus(deg: number | null | undefined): MetricStatus {
   return 'risk'
 }
 
+/** Frontal pelvic obliquity — |deg| under ~5° is typical. */
+export function hipDropStatus(deg: number | null | undefined): MetricStatus {
+  if (deg == null) return 'idle'
+  const abs = Math.abs(deg)
+  if (abs <= 5) return 'optimal'
+  if (abs <= 8) return 'caution'
+  return 'risk'
+}
+
+export function lateralLeanStatus(deg: number | null | undefined): MetricStatus {
+  if (deg == null) return 'idle'
+  const abs = Math.abs(deg)
+  if (abs <= 4) return 'optimal'
+  if (abs <= 8) return 'caution'
+  return 'risk'
+}
+
+export function kneeValgusStatus(deg: number | null | undefined): MetricStatus {
+  if (deg == null) return 'idle'
+  const abs = Math.abs(deg)
+  if (abs <= 5) return 'optimal'
+  if (abs <= 10) return 'caution'
+  return 'risk'
+}
+
+export function crossoverStatus(px: number | null | undefined): MetricStatus {
+  if (px == null) return 'idle'
+  if (px <= 0) return 'optimal'
+  if (px <= 15) return 'caution'
+  return 'risk'
+}
+
 export function flexionFromInterior(interiorDeg: number | null | undefined): number | null {
   if (interiorDeg == null) return null
   return Math.max(0, 180 - interiorDeg)

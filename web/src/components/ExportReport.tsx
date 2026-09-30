@@ -46,15 +46,6 @@ export function ExportReport({ recorded, contactFrames }: ExportReportProps) {
           >
             JSON
           </button>
-          <a
-            href="https://gotaper.app"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-2 rounded-md border border-signal/50 bg-signal/10 px-3 py-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-signal hover:bg-signal/20"
-          >
-            Export Session Data to Gotaper.app
-            <span aria-hidden>↗</span>
-          </a>
         </div>
       </div>
     </section>
