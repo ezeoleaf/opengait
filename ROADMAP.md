@@ -20,12 +20,12 @@ Real-time running gait analysis: camera → BlazePose ONNX → biomechanics → 
 - [x] Frame width/height in WS envelope for dashboard scaling
 - [x] `scripts/fetch-model.sh` for landmark + detector ONNX
 - [x] Unit tests for core biomechanics helpers
+- [x] README with architecture overview + quickstart
 
 ## Next
 
 - [ ] Landmark temporal filter (1€ / Kalman) before biomechanics
 - [ ] Device picker CLI (`--list-cameras`) and clearer macOS permission errors
-- [ ] README with architecture diagram + quickstart
 
 ## Later
 
