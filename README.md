@@ -31,6 +31,10 @@ Camera (60 FPS) ──► Detector ROI ──► Landmark pose (33 pts)
 - Session recording, slow-mo scrub, PDF/JSON debrief in the web UI
 
 ## Screenshots
+<img width="1169" height="994" alt="Screenshot 2026-10-02 at 22 37 55" src="https://github.com/user-attachments/assets/199cd9dc-da7f-4b3c-b993-cd2b5b567735" />
+
+<img width="1133" height="987" alt="Screenshot 2026-10-02 at 22 38 05" src="https://github.com/user-attachments/assets/69272518-90f9-40a4-8429-e15e3bdb7cfe" />
+
 
 ## Demo reel (screenshots & video)
 
