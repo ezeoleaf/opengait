@@ -30,6 +30,24 @@ Camera (60 FPS) ──► Detector ROI ──► Landmark pose (33 pts)
 - Web UI view switcher (sends `set_view` over WebSocket)
 - Session recording, slow-mo scrub, PDF/JSON debrief in the web UI
 
+## Project site
+
+A static project page (not the dashboard) lives in [`site/`](site/) and deploys to
+**GitHub Pages** via [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
+
+After the first successful workflow run, enable Pages in the repo settings if needed:
+
+**Settings → Pages → Source → GitHub Actions**
+
+Site URL: [https://ezeoleaf.github.io/opengait/](https://ezeoleaf.github.io/opengait/)
+
+Preview locally:
+
+```bash
+cd site && python3 -m http.server 4173
+# open http://localhost:4173
+```
+
 ## Screenshots
 <img width="1169" height="994" alt="Screenshot 2026-10-02 at 22 37 55" src="https://github.com/user-attachments/assets/199cd9dc-da7f-4b3c-b993-cd2b5b567735" />
 
@@ -147,6 +165,7 @@ open-gait/
 │   ├── view.rs          # CameraView (side/front/back)
 │   ├── calibration.rs   # Facing + px→cm
 │   └── preview.rs       # JPEG encode for WS
+├── site/                # Project landing page (GitHub Pages)
 ├── models/              # ONNX files (downloaded, not committed)
 ├── scripts/fetch-model.sh
 ├── web/                 # Open Gait React dashboard

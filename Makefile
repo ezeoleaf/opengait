@@ -5,6 +5,9 @@ demo:
 	  --preview-fps 15 \
 	  --preview-quality 72
 
+site:
+	cd site && python3 -m http.server 4173
+
 run:
 	cargo run --release --features camera,onnx -- \
 	  --live --device 0 \
@@ -32,4 +35,4 @@ test:
 web:
 	cd web && npm run dev
 
-.PHONY: demo run clean build clean-release clippy test web
+.PHONY: demo site run clean build clean-release clippy test web

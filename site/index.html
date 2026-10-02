@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Open Gait — open-source real-time running gait analysis. Rust + ONNX pose, side/front/back views, local WebSocket dashboard."
+    />
+    <meta name="theme-color" content="#0b1c22" />
+    <title>Open Gait — real-time running gait analysis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg-mesh" aria-hidden="true"></div>
+    <div class="bg-lanes" aria-hidden="true"></div>
+
+    <header class="top">
+      <a class="brand-mark" href="#top">Open Gait</a>
+      <nav class="nav">
+        <a href="#how">How it works</a>
+        <a href="#views">Views</a>
+        <a href="#start">Get started</a>
+        <a class="nav-github" href="https://github.com/ezeoleaf/opengait" rel="noopener">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Open-source · local-first · GPL-3.0</p>
+          <h1 class="brand-hero">Open Gait</h1>
+          <p class="lede">
+            Real-time running form analysis from a side, front, or back camera —
+            pose landmarks to biomechanics, streamed to a local dashboard.
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="https://github.com/ezeoleaf/opengait">View on GitHub</a>
+            <a class="btn btn-ghost" href="#start">Run the demo</a>
+          </div>
+        </div>
+        <div class="hero-stage" aria-hidden="true">
+          <svg class="runner" viewBox="0 0 420 480" role="img">
+            <defs>
+              <linearGradient id="bone" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#5eead4" />
+                <stop offset="100%" stop-color="#22d3ee" />
+              </linearGradient>
+            </defs>
+            <g class="runner-figure" stroke="url(#bone)" stroke-width="6" stroke-linecap="round" fill="none">
+              <circle class="joint head" cx="210" cy="78" r="18" fill="#0b1c22" stroke-width="5" />
+              <path class="torso" d="M210 98 L210 210" />
+              <path class="arm-l" d="M210 130 L150 180 L120 230" />
+              <path class="arm-r" d="M210 130 L275 175 L310 225" />
+              <path class="leg-l" d="M210 210 L165 300 L145 390" />
+              <path class="leg-r" d="M210 210 L255 295 L290 385" />
+            </g>
+            <g class="ground" stroke="#94a3b8" stroke-width="2" opacity="0.45">
+              <line x1="40" y1="410" x2="380" y2="410" />
+              <line class="stripe" x1="60" y1="430" x2="120" y2="430" />
+              <line class="stripe" x1="160" y1="430" x2="220" y2="430" />
+              <line class="stripe" x1="260" y1="430" x2="320" y2="430" />
+            </g>
+          </svg>
+          <div class="metric-float m1"><span>Cadence</span><strong>178 SPM</strong></div>
+          <div class="metric-float m2"><span>Lean</span><strong>7.2°</strong></div>
+          <div class="metric-float m3"><span>View</span><strong>side</strong></div>
+        </div>
+      </section>
+
+      <section class="section" id="how">
+        <h2>Camera in. Form cues out.</h2>
+        <p class="section-lede">
+          A Rust pipeline captures frames, estimates BlazePose landmarks, and computes
+          gait metrics. Results leave your machine only if you choose — the dashboard
+          talks to a local WebSocket.
+        </p>
+        <ol class="pipeline">
+          <li>
+            <span class="step">01</span>
+            <strong>Capture</strong>
+            <span>Live camera or a scripted synthetic demo reel</span>
+          </li>
+          <li>
+            <span class="step">02</span>
+            <strong>Pose</strong>
+            <span>Detector ROI + 33-point landmark model (ONNX)</span>
+          </li>
+          <li>
+            <span class="step">03</span>
+            <strong>Biomechanics</strong>
+            <span>Cadence, lean, overstride, hip drop, valgus, crossover</span>
+          </li>
+          <li>
+            <span class="step">04</span>
+            <strong>Dashboard</strong>
+            <span>Live overlay, trends, recording, and PDF debrief</span>
+          </li>
+        </ol>
+      </section>
+
+      <section class="section section-alt" id="views">
+        <h2>Three camera planes</h2>
+        <p class="section-lede">
+          Switch viewpoint from the UI — the same session can analyse sagittal form
+          and frontal-plane cues without restarting the backend.
+        </p>
+        <ul class="views">
+          <li>
+            <p class="view-label">Side</p>
+            <p class="view-title">Sagittal</p>
+            <p>Cadence, knee flexion at contact, torso lean, overstride.</p>
+          </li>
+          <li>
+            <p class="view-label">Front</p>
+            <p class="view-title">Anterior</p>
+            <p>Hip drop, lateral trunk lean, knee valgus, crossover gait.</p>
+          </li>
+          <li>
+            <p class="view-label">Back</p>
+            <p class="view-title">Posterior</p>
+            <p>Same frontal metrics from behind — useful on a treadmill belt.</p>
+          </li>
+        </ul>
+      </section>
+
+      <section class="section" id="privacy">
+        <h2>Privacy by design</h2>
+        <p class="section-lede">
+          Analysis runs on your computer. Turn <em>Video off</em> in the dashboard to
+          stop JPEG frames over the WebSocket — skeleton and metrics keep updating.
+        </p>
+      </section>
+
+      <section class="section section-alt" id="start">
+        <h2>Try the demo in two terminals</h2>
+        <p class="section-lede">
+          No camera or ONNX models required. The backend loops a 70-second gait reel
+          with changing form scenarios — good for exploring the UI or filming a walkthrough.
+        </p>
+        <pre class="code"><code># Terminal 1 — backend demo reel
+make demo
+
+# Terminal 2 — Open Gait Dashboard
+cd web &amp;&amp; npm install &amp;&amp; npm run dev</code></pre>
+        <p class="after-code">
+          Then open <a href="http://localhost:5173">http://localhost:5173</a>.
+          Full live-camera setup and flags live in the
+          <a href="https://github.com/ezeoleaf/opengait#readme">README</a>.
+        </p>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>
+        <strong>Open Gait</strong>
+        · GPL-3.0 ·
+        <a href="https://github.com/ezeoleaf/opengait">github.com/ezeoleaf/opengait</a>
+      </p>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
