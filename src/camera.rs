@@ -1,9 +1,12 @@
 //! Camera capture optimized for high frame-rate side-view treadmill streams.
 //!
-//! Default build uses a synthetic generator so the pipeline runs without
+//! Default build uses a synthetic demo generator so the pipeline runs without
 //! hardware. Enable the `camera` feature for live capture via `nokhwa`.
 
+use crate::demo;
+use crate::view::CameraView;
 use anyhow::Result;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A single captured video frame (RGB8, tightly packed).
@@ -15,6 +18,7 @@ pub struct Frame {
     #[allow(dead_code)]
     pub data: Vec<u8>,
     pub frame_index: u64,
+    #[allow(dead_code)]
     pub timestamp: Instant,
 }
 
@@ -55,17 +59,18 @@ pub trait FrameSource {
     fn config(&self) -> &CaptureConfig;
 }
 
-/// Synthetic side-view runner for offline demos and CI.
+/// Synthetic demo runner with scripted gait phases (see `demo` module).
 pub struct SyntheticCamera {
     config: CaptureConfig,
     frame_index: u64,
     started: Instant,
     period: Duration,
     next_due: Instant,
+    view: Arc<Mutex<CameraView>>,
 }
 
 impl SyntheticCamera {
-    pub fn new(config: CaptureConfig) -> Self {
+    pub fn new(config: CaptureConfig, view: Arc<Mutex<CameraView>>) -> Self {
         let period = Duration::from_secs_f64(1.0 / config.fps.max(1) as f64);
         let now = Instant::now();
         Self {
@@ -74,23 +79,8 @@ impl SyntheticCamera {
             started: now,
             period,
             next_due: now,
+            view,
         }
-    }
-
-    fn render(&self, t: f64) -> Vec<u8> {
-        let w = self.config.width as usize;
-        let h = self.config.height as usize;
-        let mut buf = vec![24u8; w * h * 3]; // dark gray background
-
-        // Simple oscillating "ankle" bright spot to exercise the pipeline.
-        let cx = (w as f64 * 0.45) as usize;
-        let ankle_y = (h as f64 * (0.55 + 0.12 * (t * std::f64::consts::TAU * 1.5).sin())) as usize;
-        paint_dot(&mut buf, w, h, cx, ankle_y.min(h - 1), 8, [255, 80, 80]);
-
-        let hip_y = (h as f64 * 0.35) as usize;
-        paint_dot(&mut buf, w, h, cx, hip_y, 6, [80, 200, 255]);
-
-        buf
     }
 }
 
@@ -102,14 +92,15 @@ impl FrameSource for SyntheticCamera {
         }
         self.next_due += self.period;
 
-        let t = self.started.elapsed().as_secs_f64();
-        let data = self.render(t);
+        let t = self.frame_index as f64 / self.config.fps.max(1) as f64;
+        let view = *self.view.lock().unwrap();
+        let data = demo::render_frame(t, view, self.config.width, self.config.height);
         let frame = Frame {
             width: self.config.width,
             height: self.config.height,
             data,
             frame_index: self.frame_index,
-            timestamp: Instant::now(),
+            timestamp: self.started + Duration::from_secs_f64(t),
         };
         self.frame_index += 1;
         Ok(Some(frame))
@@ -120,42 +111,28 @@ impl FrameSource for SyntheticCamera {
     }
 }
 
-fn paint_dot(buf: &mut [u8], w: usize, h: usize, cx: usize, cy: usize, radius: usize, rgb: [u8; 3]) {
-    let r2 = (radius * radius) as isize;
-    for dy in -(radius as isize)..=(radius as isize) {
-        for dx in -(radius as isize)..=(radius as isize) {
-            if dx * dx + dy * dy > r2 {
-                continue;
-            }
-            let x = cx as isize + dx;
-            let y = cy as isize + dy;
-            if x < 0 || y < 0 || x >= w as isize || y >= h as isize {
-                continue;
-            }
-            let i = ((y as usize) * w + x as usize) * 3;
-            buf[i] = rgb[0];
-            buf[i + 1] = rgb[1];
-            buf[i + 2] = rgb[2];
-        }
-    }
-}
-
 /// Open the best available frame source for the given config.
-pub fn open_capture(config: CaptureConfig, prefer_live: bool) -> Result<Box<dyn FrameSource>> {
+pub fn open_capture(
+    config: CaptureConfig,
+    prefer_live: bool,
+    view: Arc<Mutex<CameraView>>,
+) -> Result<Box<dyn FrameSource>> {
     if prefer_live {
         #[cfg(feature = "camera")]
         {
+            let _ = view;
             return Ok(Box::new(NokhwaCamera::open(config)?));
         }
         #[cfg(not(feature = "camera"))]
         {
             tracing::warn!(
-                "live camera requested but `camera` feature is disabled; using synthetic source"
+                "live camera requested but `camera` feature is disabled; using synthetic demo"
             );
         }
     }
-    Ok(Box::new(SyntheticCamera::new(config)))
+    Ok(Box::new(SyntheticCamera::new(config, view)))
 }
+
 
 #[cfg(feature = "camera")]
 mod live {

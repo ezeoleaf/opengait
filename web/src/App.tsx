@@ -5,6 +5,7 @@ import { MetricHistoryCharts } from './components/MetricHistoryCharts'
 import { RecordingScrubber } from './components/RecordingScrubber'
 import { ExportReport } from './components/ExportReport'
 import { ViewSelector } from './components/ViewSelector'
+import { PreviewToggle } from './components/PreviewToggle'
 
 export default function App() {
   const stream = useGaitStream({ url: 'ws://127.0.0.1:8080' })
@@ -26,6 +27,11 @@ export default function App() {
           <ViewSelector
             value={stream.view}
             onChange={stream.setView}
+            disabled={stream.status !== 'open'}
+          />
+          <PreviewToggle
+            enabled={stream.previewEnabled}
+            onChange={stream.setPreviewEnabled}
             disabled={stream.status !== 'open'}
           />
           <StatusPill status={stream.status} error={stream.error} />
@@ -52,8 +58,9 @@ export default function App() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(280px,0.7fr)]">
         <VideoSkeletonPanel
           metrics={stream.latest}
-          frameDataUrl={stream.frameDataUrl}
+          frameDataUrl={stream.previewEnabled ? stream.frameDataUrl : null}
           live={stream.status === 'open'}
+          previewEnabled={stream.previewEnabled}
           sourceWidth={stream.frameWidth}
           sourceHeight={stream.frameHeight}
         />
@@ -80,7 +87,11 @@ export default function App() {
       <footer className="border-t border-line pt-3 pb-2 font-mono text-[11px] text-mute">
         open-gait · ws://127.0.0.1:8080 · view {stream.view} · facing {stream.facing ?? '—'}
         {stream.cmPerPx != null ? ` · ${stream.cmPerPx.toFixed(3)} cm/px` : ''}
-        {stream.frameDataUrl ? ' · live preview' : ''}
+        {stream.previewEnabled
+          ? stream.frameDataUrl
+            ? ' · live preview'
+            : ' · preview on'
+          : ' · video off'}
         {stream.latest?.roi ? ' · ROI' : ''}
       </footer>
     </div>

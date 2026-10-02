@@ -3,7 +3,7 @@ name = "open-gait"
 version = "0.1.0"
 edition = "2021"
 description = "Open-source real-time running gait analysis using Rust and ONNX Runtime"
-license = "MIT"
+license = "GPL-3.0-only"
 keywords = ["gait", "biomechanics", "pose", "running", "onnx"]
 categories = ["multimedia", "science"]
 

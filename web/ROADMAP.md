@@ -10,6 +10,7 @@ React + Vite dashboard for open-gait: WebSocket metrics, skeleton overlay, recor
 - [x] Live metric cards: cadence, overstride, knee flexion @ IC, torso lean
 - [x] Front / back metric cards: hip drop, lateral lean, valgus, crossover
 - [x] Header view selector (Side / Front / Back → WS `set_view`)
+- [x] Video preview toggle (off → no JPEG over WS; skeleton-only)
 - [x] Status badges (Optimal / Caution / High Risk) + cadence sparkline
 - [x] Canvas skeleton overlay (~60 FPS): bones, angle arcs, overstride guide
 - [x] Source resolution from backend `frame_width` / `frame_height`
@@ -30,7 +31,6 @@ React + Vite dashboard for open-gait: WebSocket metrics, skeleton overlay, recor
 
 - [ ] Compare two recorded clips side-by-side
 - [ ] Coach annotations on contact frames (notes pinned to timeline)
-- [ ] Upload session JSON to Gotaper.app (authenticated)
 - [ ] PWA / installable dashboard
 - [ ] Accessibility pass (keyboard scrubber, reduced-motion, contrast)
 - [ ] i18n of chrome UI

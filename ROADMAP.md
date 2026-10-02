@@ -17,6 +17,7 @@ Real-time running gait analysis: camera → BlazePose ONNX → biomechanics → 
 - [x] Biomechanics: knee flexion, torso lean, overstride, cadence (SPM)
 - [x] Front / back (frontal-plane) metrics: hip drop, lateral lean, knee valgus, crossover
 - [x] Runtime view switching via CLI `--view` and WS `set_view` from the dashboard
+- [x] Scripted synthetic demo reel (`--demo` / default offline) for screenshots & video
 - [x] Foot-strike detection with EMA ankle smoothing + refractory window
 - [x] JSON line stream on stdout + `ws://127.0.0.1:8080` metrics broadcast
 - [x] Frame width/height in WS envelope for dashboard scaling

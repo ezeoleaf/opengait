@@ -66,6 +66,7 @@ export interface MetricsMessage {
   frame_height?: number
   view?: CameraView
   facing?: 'left' | 'right' | 'auto'
+  preview?: boolean
   cm_per_px?: number | null
   /** Base64 JPEG (no data-URL prefix). */
   frame?: string

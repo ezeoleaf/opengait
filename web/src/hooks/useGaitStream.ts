@@ -12,6 +12,18 @@ import { metricHistoryFromGait } from '../components/MetricHistoryCharts'
 const DEFAULT_URL = 'ws://127.0.0.1:8080'
 const MAX_HISTORY = 300
 const MAX_RECORD_SECS = 30
+const PREVIEW_STORAGE_KEY = 'open-gait.preview'
+
+function readStoredPreview(): boolean {
+  try {
+    const v = localStorage.getItem(PREVIEW_STORAGE_KEY)
+    if (v === '0' || v === 'false') return false
+    if (v === '1' || v === 'true') return true
+  } catch {
+    // ignore
+  }
+  return true
+}
 
 export interface GaitStreamOptions {
   url?: string
@@ -27,6 +39,8 @@ export interface GaitStreamState {
   frameWidth: number
   frameHeight: number
   view: CameraView
+  /** When false, backend stops sending JPEG frames (skeleton-only UI). */
+  previewEnabled: boolean
   facing: 'left' | 'right' | 'auto' | null
   cmPerPx: number | null
   history: GaitMetrics[]
@@ -39,6 +53,7 @@ export interface GaitStreamState {
   connect: () => void
   disconnect: () => void
   setView: (view: CameraView) => void
+  setPreviewEnabled: (enabled: boolean) => void
   startRecording: () => void
   stopRecording: () => void
   clearRecording: () => void
@@ -55,6 +70,7 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
   const [frameWidth, setFrameWidth] = useState(1280)
   const [frameHeight, setFrameHeight] = useState(720)
   const [view, setViewState] = useState<CameraView>('side')
+  const [previewEnabled, setPreviewState] = useState<boolean>(() => readStoredPreview())
   const [facing, setFacing] = useState<'left' | 'right' | 'auto' | null>(null)
   const [cmPerPx, setCmPerPx] = useState<number | null>(null)
   const [history, setHistory] = useState<GaitMetrics[]>([])
@@ -66,10 +82,13 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
   const [error, setError] = useState<string | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
+  const previewRef = useRef(previewEnabled)
   const recordingRef = useRef(false)
   const recordStartRef = useRef<number | null>(null)
   const rafPending = useRef(false)
   const pendingMsg = useRef<MetricsMessage | null>(null)
+
+  previewRef.current = previewEnabled
 
   const applyMessage = useCallback(
     (msg: MetricsMessage) => {
@@ -90,11 +109,13 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
       }
       if (msg.facing) setFacing(msg.facing)
       if (msg.cm_per_px != null) setCmPerPx(msg.cm_per_px)
-      if (msg.frame) {
+      if (previewRef.current && msg.frame) {
         const dataUrl = msg.frame.startsWith('data:')
           ? msg.frame
           : `data:image/jpeg;base64,${msg.frame}`
         setFrameDataUrl(dataUrl)
+      } else if (!previewRef.current) {
+        setFrameDataUrl(null)
       }
 
       setHistory((prev) => {
@@ -124,11 +145,12 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
           setRecorded((prev) => {
             const frame: RecordedFrame = {
               metrics: m,
-              frameDataUrl: msg.frame
-                ? msg.frame.startsWith('data:')
-                  ? msg.frame
-                  : `data:image/jpeg;base64,${msg.frame}`
-                : undefined,
+              frameDataUrl:
+                previewRef.current && msg.frame
+                  ? msg.frame.startsWith('data:')
+                    ? msg.frame
+                    : `data:image/jpeg;base64,${msg.frame}`
+                  : undefined,
             }
             const next = [...prev, frame]
             if (m.left_foot_strike || m.right_foot_strike) {
@@ -174,7 +196,13 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
       const ws = new WebSocket(url)
       wsRef.current = ws
 
-      ws.onopen = () => setStatus('open')
+      ws.onopen = () => {
+        setStatus('open')
+        // Sync stored privacy preference so the backend stops JPEG encode if off.
+        ws.send(
+          JSON.stringify({ type: 'set_preview', preview: previewRef.current }),
+        )
+      }
       ws.onerror = () => {
         setStatus('error')
         setError(`Failed to connect to ${url}`)
@@ -217,6 +245,21 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
     }
   }, [])
 
+  const setPreviewEnabled = useCallback((enabled: boolean) => {
+    setPreviewState(enabled)
+    previewRef.current = enabled
+    try {
+      localStorage.setItem(PREVIEW_STORAGE_KEY, enabled ? '1' : '0')
+    } catch {
+      // ignore
+    }
+    if (!enabled) setFrameDataUrl(null)
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'set_preview', preview: enabled }))
+    }
+  }, [])
+
   const startRecording = useCallback(() => {
     recordingRef.current = true
     recordStartRef.current = null
@@ -245,6 +288,7 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
     frameWidth,
     frameHeight,
     view,
+    previewEnabled,
     facing,
     cmPerPx,
     history,
@@ -257,6 +301,7 @@ export function useGaitStream(options: GaitStreamOptions = {}): GaitStreamState 
     connect,
     disconnect,
     setView,
+    setPreviewEnabled,
     startRecording,
     stopRecording,
     clearRecording,

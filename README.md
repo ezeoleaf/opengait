@@ -20,27 +20,52 @@ Camera (60 FPS) ──► Detector ROI ──► Landmark pose (33 pts)
 
 ## Features
 
-- Live or synthetic capture (`nokhwa` / demo generator)
+- Live capture or **scripted synthetic demo** (no camera / models required)
 - BlazePose person detector + oriented ROI + landmark ONNX
 - **Multi-view form**: side (sagittal) and front / back (frontal plane)
 - Side metrics: cadence (SPM), knee flexion, torso lean, overstride (px / cm)
 - Front/back metrics: hip drop, trunk lateral lean, knee valgus, crossover
-- Throttled JPEG preview + skeleton overlay for the dashboard
+- Throttled JPEG preview + skeleton overlay (toggle video off for privacy)
 - Side-view calibration (`--facing`, `--height-cm`)
 - Web UI view switcher (sends `set_view` over WebSocket)
 - Session recording, slow-mo scrub, PDF/JSON debrief in the web UI
+
+## Screenshots
+
+## Demo reel (screenshots & video)
+
+The default non-live build runs a **70-second looping demo** with a stick-figure runner and changing gait scenarios — ideal for recording a repo walkthrough without a treadmill setup.
+
+| Phase | Approx. window | What changes |
+| --- | --- | --- |
+| Steady | 0–12 s | ~175 SPM baseline |
+| Overstride | 12–24 s | ankle ahead of hip |
+| High cadence | 24–34 s | ~190 SPM |
+| Forward lean | 34–44 s | larger torso lean |
+| Frontal form | 44–58 s | hip drop / valgus / crossover (switch UI to **Front**) |
+| Recovery | 58–70 s | back toward baseline |
+
+```bash
+# Terminal 1 — synthetic demo backend (JPEG preview on)
+make demo
+# or: cargo run --release -- --demo --preview-fps 15 --facing right
+
+# Terminal 2 — dashboard
+make web
+# or: cd web && npm install && npm run dev
+```
+
+Open http://localhost:5173. Use the header **Side / Front / Back** control during the *frontal-form* phase for frontal metrics cards. Tip: leave **Video on** while filming; use **Video off** for skeleton-only shots.
 
 ## Models (not in git)
 
 ONNX weights are **not committed** (see `*.onnx` in `.gitignore`). They are large binaries (~26 MB total) and come from an upstream conversion of MediaPipe models.
 
-**Download them once:**
+**Download them once** (only needed for live camera analysis):
 
 ```bash
 ./scripts/fetch-model.sh
 ```
-
-That writes:
 
 | File | Role |
 | --- | --- |
@@ -49,34 +74,26 @@ That writes:
 
 Source: [bolducmanuel/blaze_models_onnxruntime](https://github.com/bolducmanuel/blaze_models_onnxruntime). More detail in [`models/README.md`](models/README.md).
 
-> **Should you upload them to the repo?** Prefer **no** — keep the fetch script. Committing `.onnx` files bloats history, slows clones, and duplicates upstream. Use [Git LFS](https://git-lfs.com/) only if you need a private/offline mirror; for public open-source, download-on-setup is enough.
-
 ## Requirements
 
 - Rust (stable)
 - Node.js 20+ (for the dashboard)
-- Camera permission for your terminal app (macOS: System Settings → Privacy & Security → Camera)
+- Camera permission for your terminal app when using `--live` (macOS: System Settings → Privacy & Security → Camera)
 - Optional: `--features camera,onnx` for live inference
 
 ## Quick start
 
-### 1. Models
+### Synthetic demo (no camera / no models)
+
+```bash
+cargo run --release -- --demo --preview-fps 15 --facing right
+```
+
+### Live camera + ONNX
 
 ```bash
 ./scripts/fetch-model.sh
-```
 
-### 2. Rust backend
-
-Synthetic demo (no camera / no models):
-
-```bash
-cargo run --release
-```
-
-Live camera + ONNX:
-
-```bash
 cargo run --release --features camera,onnx -- \
   --live --device 0 \
   --model models/blazepose_landmark_full.onnx \
@@ -87,12 +104,13 @@ cargo run --release --features camera,onnx -- \
   --preview-fps 12
 ```
 
-Metrics stream on **`ws://127.0.0.1:8080`** (and JSON lines on stdout). Switch **Side / Front / Back** in the dashboard header to change which plane is analysed (no restart needed).
+Metrics stream on **`ws://127.0.0.1:8080`**. Switch **Side / Front / Back** in the dashboard header to change which plane is analysed (no restart needed).
 
 Useful flags:
 
 | Flag | Meaning |
 | --- | --- |
+| `--demo` | Scripted synthetic reel (also default without `--live` / `--model`) |
 | `--live` | Use webcam (needs `--features camera`) |
 | `--device N` | Camera index (default `0`) |
 | `--model` / `--detector` | Landmark + detector ONNX paths |
@@ -102,7 +120,7 @@ Useful flags:
 | `--preview-fps` | JPEG preview rate over WS (`0` = off) |
 | `--no-ws` | Stdout only |
 
-### 3. Dashboard
+### Dashboard
 
 ```bash
 cd web
@@ -119,6 +137,7 @@ open-gait/
 ├── src/                 # Rust binary
 │   ├── main.rs          # CLI, WS server, pipeline
 │   ├── camera.rs        # Capture (live / synthetic)
+│   ├── demo.rs          # Scripted gait reel + stick-figure frames
 │   ├── pose.rs          # ONNX detector + landmarks
 │   ├── biomechanics.rs  # Side + frontal metrics
 │   ├── view.rs          # CameraView (side/front/back)
@@ -142,4 +161,4 @@ cd web && npm run build
 
 ## License
 
-MIT (see package metadata in `Cargo.toml`).
+This project is licensed under the **GNU General Public License v3.0 only** — see [`LICENSE`](LICENSE) and the `license` field in `Cargo.toml`.

@@ -1,13 +1,16 @@
 //! Pose estimation: 33 BlazePose-compatible landmarks from RGB frames.
 //!
-//! Default build ships a deterministic synthetic estimator for demos/tests.
+//! Default build ships a deterministic synthetic demo estimator (see `demo`).
 //! Enable the `onnx` feature and pass `--model path/to/blazepose.onnx` for
 //! real ONNX Runtime inference. Optionally pass `--detector` (or place
 //! `pose_detection.onnx` next to the landmark model) for MediaPipe-style ROI.
 
-use crate::biomechanics::{Keypoint, Landmark, PoseFrame};
+use crate::biomechanics::PoseFrame;
 use crate::camera::Frame;
+use crate::demo;
+use crate::view::CameraView;
 use anyhow::{bail, Result};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Trait implemented by all pose backends.
@@ -18,105 +21,26 @@ pub trait PoseEstimator {
     fn estimate(&mut self, frame: &Frame, pipeline_start: Instant) -> Result<PoseFrame>;
 }
 
-/// Synthetic side-view runner that oscillates ankles for cadence demos.
+/// Synthetic demo pose that mirrors the stick-figure camera and follows `view`.
 pub struct SyntheticPose {
-    cadence_hz: f64,
+    view: Arc<Mutex<CameraView>>,
+    fps: f64,
 }
 
-impl Default for SyntheticPose {
-    fn default() -> Self {
-        Self { cadence_hz: 1.5 } // ~180 SPM (both feet)
+impl SyntheticPose {
+    pub fn new(view: Arc<Mutex<CameraView>>, fps: u32) -> Self {
+        Self {
+            view,
+            fps: fps.max(1) as f64,
+        }
     }
 }
 
 impl PoseEstimator for SyntheticPose {
-    fn estimate(&mut self, frame: &Frame, pipeline_start: Instant) -> Result<PoseFrame> {
-        let t = frame.timestamp.duration_since(pipeline_start).as_secs_f64();
-        let w = frame.width as f32;
-        let h = frame.height as f32;
-
-        let phase = t * std::f64::consts::TAU * self.cadence_hz;
-        let left_ankle_y = h * (0.72 + 0.10 * phase.sin() as f32);
-        let right_ankle_y = h * (0.72 + 0.10 * (phase + std::f64::consts::PI).sin() as f32);
-
-        let cx = w * 0.50;
-        let mut landmarks = vec![Keypoint::new(0.0, 0.0, 0.0); 33];
-
-        set(
-            &mut landmarks,
-            Landmark::LeftShoulder,
-            cx - 20.0,
-            h * 0.22,
-            0.95,
-        );
-        set(
-            &mut landmarks,
-            Landmark::RightShoulder,
-            cx + 20.0,
-            h * 0.22,
-            0.95,
-        );
-        set(&mut landmarks, Landmark::LeftHip, cx - 18.0, h * 0.42, 0.95);
-        set(&mut landmarks, Landmark::RightHip, cx + 18.0, h * 0.42, 0.95);
-
-        set(
-            &mut landmarks,
-            Landmark::LeftKnee,
-            cx - 22.0,
-            h * 0.58,
-            0.9,
-        );
-        set(
-            &mut landmarks,
-            Landmark::LeftAnkle,
-            cx - 20.0 + 15.0 * (phase.cos() as f32),
-            left_ankle_y,
-            0.9,
-        );
-        set(
-            &mut landmarks,
-            Landmark::LeftHeel,
-            cx - 22.0,
-            left_ankle_y + 4.0,
-            0.85,
-        );
-        set(
-            &mut landmarks,
-            Landmark::LeftFootIndex,
-            cx - 12.0,
-            left_ankle_y + 2.0,
-            0.85,
-        );
-
-        set(
-            &mut landmarks,
-            Landmark::RightKnee,
-            cx + 22.0,
-            h * 0.58,
-            0.9,
-        );
-        set(
-            &mut landmarks,
-            Landmark::RightAnkle,
-            cx + 20.0 + 15.0 * ((phase + std::f64::consts::PI).cos() as f32),
-            right_ankle_y,
-            0.9,
-        );
-        set(
-            &mut landmarks,
-            Landmark::RightHeel,
-            cx + 22.0,
-            right_ankle_y + 4.0,
-            0.85,
-        );
-        set(
-            &mut landmarks,
-            Landmark::RightFootIndex,
-            cx + 12.0,
-            right_ankle_y + 2.0,
-            0.85,
-        );
-
+    fn estimate(&mut self, frame: &Frame, _pipeline_start: Instant) -> Result<PoseFrame> {
+        let t = frame.frame_index as f64 / self.fps;
+        let view = *self.view.lock().unwrap();
+        let landmarks = demo::landmarks(t, view, frame.width as f32, frame.height as f32);
         Ok(PoseFrame {
             frame_index: frame.frame_index,
             timestamp_secs: t,
@@ -126,32 +50,31 @@ impl PoseEstimator for SyntheticPose {
     }
 }
 
-fn set(landmarks: &mut [Keypoint], id: Landmark, x: f32, y: f32, conf: f32) {
-    landmarks[id as usize] = Keypoint::new(x, y, conf);
-}
-
 /// Build a pose estimator. Uses ONNX when `model_path` is set and the
-/// `onnx` feature is enabled; otherwise falls back to synthetic poses.
+/// `onnx` feature is enabled; otherwise falls back to the synthetic demo.
 pub fn open_estimator(
     model_path: Option<&str>,
     detector_path: Option<&str>,
+    view: Arc<Mutex<CameraView>>,
+    fps: u32,
 ) -> Result<Box<dyn PoseEstimator>> {
     match model_path {
         Some(path) => {
             #[cfg(feature = "onnx")]
             {
+                let _ = (view, fps);
                 return Ok(Box::new(OnnxPose::load(path, detector_path)?));
             }
             #[cfg(not(feature = "onnx"))]
             {
-                let _ = (path, detector_path);
+                let _ = (path, detector_path, view, fps);
                 bail!(
                     "ONNX model requested but the `onnx` feature is not enabled. \
                      Rebuild with `--features onnx` or omit `--model`."
                 );
             }
         }
-        None => Ok(Box::new(SyntheticPose::default())),
+        None => Ok(Box::new(SyntheticPose::new(view, fps))),
     }
 }
 

@@ -7,6 +7,7 @@
 mod biomechanics;
 mod calibration;
 mod camera;
+mod demo;
 mod pose;
 mod preview;
 mod view;
@@ -52,6 +53,11 @@ struct Args {
     #[arg(long)]
     live: bool,
 
+    /// Scripted synthetic demo reel (default when not using `--live` / `--model`).
+    /// Cycles steady → overstride → high cadence → lean → frontal form.
+    #[arg(long)]
+    demo: bool,
+
     /// Optional path to a BlazePose / MoveNet `.onnx` landmark model (`--features onnx`).
     #[arg(long)]
     model: Option<String>,
@@ -90,7 +96,7 @@ struct Args {
     window_secs: f64,
 
     /// Also emit one JSON object per line on stdout (never includes JPEG).
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     stdout_json: bool,
 
     /// Bind address for the metrics WebSocket server.
@@ -105,9 +111,12 @@ struct Args {
 /// Live session knobs shared between the WS server and the capture pipeline.
 #[derive(Debug, Clone)]
 struct SessionConfig {
-    view: CameraView,
+    /// Shared with synthetic camera/pose so dashboard `set_view` updates the figure.
+    view: Arc<Mutex<CameraView>>,
     facing: Facing,
     height_cm: Option<f32>,
+    /// When false, JPEG frames are not encoded or sent over WebSocket.
+    preview_enabled: bool,
 }
 
 /// Envelope sent to dashboards over WebSocket / stdout.
@@ -132,6 +141,8 @@ struct ClientCommand {
     kind: String,
     view: Option<String>,
     facing: Option<String>,
+    /// Enable / disable JPEG video preview over WebSocket.
+    preview: Option<bool>,
 }
 
 #[tokio::main]
@@ -151,11 +162,20 @@ async fn main() -> Result<()> {
         anyhow::anyhow!("invalid --facing {:?} (use left|right|auto)", args.facing)
     })?;
 
+    let use_demo = args.demo || (!args.live && args.model.is_none());
+    let view_slot = Arc::new(Mutex::new(view));
     let session = Arc::new(Mutex::new(SessionConfig {
-        view,
+        view: Arc::clone(&view_slot),
         facing,
-        height_cm: args.height_cm,
+        height_cm: args.height_cm.or(if use_demo { Some(175.0) } else { None }),
+        preview_enabled: args.preview_fps > 0,
     }));
+
+    if use_demo {
+        info!(
+            "synthetic demo reel enabled (70s cycle: steady → overstride → high-cadence → lean → frontal-form → recovery)"
+        );
+    }
 
     let (tx, _) = broadcast::channel::<String>(256);
 
@@ -188,6 +208,7 @@ async fn main() -> Result<()> {
     let preview_quality = args.preview_quality;
     let tx_pipe = tx.clone();
     let session_pipe = Arc::clone(&session);
+    let view_pipe = Arc::clone(&view_slot);
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
     std::thread::Builder::new()
@@ -199,6 +220,7 @@ async fn main() -> Result<()> {
                 model.as_deref(),
                 detector.as_deref(),
                 session_pipe,
+                view_pipe,
                 window_secs,
                 stdout_json,
                 preview_fps,
@@ -229,6 +251,7 @@ fn run_pipeline(
     model: Option<&str>,
     detector: Option<&str>,
     session: Arc<Mutex<SessionConfig>>,
+    view_slot: Arc<Mutex<CameraView>>,
     window_secs: f64,
     stdout_json: bool,
     preview_fps: u32,
@@ -236,8 +259,9 @@ fn run_pipeline(
     preview_quality: u8,
     tx: broadcast::Sender<String>,
 ) -> Result<()> {
-    let mut source = open_capture(capture_cfg, live)?;
-    let mut estimator = open_estimator(model, detector)?;
+    let fps = capture_cfg.fps;
+    let mut source = open_capture(capture_cfg, live, Arc::clone(&view_slot))?;
+    let mut estimator = open_estimator(model, detector, Arc::clone(&view_slot), fps)?;
     let mut tracker = GaitTracker::new(window_secs);
 
     let (initial_facing, initial_height) = {
@@ -253,38 +277,46 @@ fn run_pipeline(
         Some(Duration::from_secs_f64(1.0 / preview_fps as f64))
     };
     let mut next_preview = Instant::now();
+    let mut last_phase = demo::phase_at(0.0);
 
     info!(
         "pipeline started ({}x{} @ {} FPS, live={live}, view={:?}, facing={:?}, preview_fps={preview_fps})",
         source.config().width,
         source.config().height,
         source.config().fps,
-        session.lock().unwrap().view,
+        *view_slot.lock().unwrap(),
         initial_facing,
     );
 
     while let Some(frame) = source.next_frame()? {
-        let (view, facing) = {
+        let (view, facing, preview_on) = {
             let s = session.lock().unwrap();
-            (s.view, s.facing)
+            let view = *s.view.lock().unwrap();
+            (view, s.facing, s.preview_enabled)
         };
         if calibration.facing != facing {
             calibration.facing = facing;
         }
 
         let pose = estimator.estimate(&frame, pipeline_start)?;
+        let phase = demo::phase_at(pose.timestamp_secs);
+        if phase != last_phase {
+            info!("demo phase → {}", phase.label());
+            last_phase = phase;
+        }
         calibration.update(&pose);
         let metrics = tracker.update(&pose, Some(&calibration), view);
 
-        let include_preview = preview_period.is_some_and(|p| {
-            let now = Instant::now();
-            if now >= next_preview {
-                next_preview = now + p;
-                true
-            } else {
-                false
-            }
-        });
+        let include_preview = preview_on
+            && preview_period.is_some_and(|p| {
+                let now = Instant::now();
+                if now >= next_preview {
+                    next_preview = now + p;
+                    true
+                } else {
+                    false
+                }
+            });
 
         let frame_b64 = if include_preview {
             match encode_preview_jpeg(&frame, preview_width, preview_quality) {
@@ -351,13 +383,14 @@ async fn handle_client(
     let (mut sink, mut incoming) = ws.split();
     let mut rx = tx.subscribe();
 
-    // Tell the client the current view on connect.
+    // Tell the client the current session knobs on connect.
     let hello = {
         let s = session.lock().unwrap();
         serde_json::json!({
             "type": "session",
-            "view": s.view,
+            "view": *s.view.lock().unwrap(),
             "facing": s.facing,
+            "preview": s.preview_enabled,
         })
         .to_string()
     };
@@ -395,16 +428,20 @@ fn apply_client_command(text: &str, session: &Mutex<SessionConfig>) {
     let Ok(cmd) = serde_json::from_str::<ClientCommand>(text) else {
         return;
     };
-    if cmd.kind != "set_view" && cmd.kind != "set_config" {
+    if cmd.kind != "set_view" && cmd.kind != "set_config" && cmd.kind != "set_preview" {
         return;
     }
     let mut s = session.lock().unwrap();
     if let Some(v) = cmd.view.as_deref().and_then(CameraView::parse) {
         info!("session view → {}", v.as_str());
-        s.view = v;
+        *s.view.lock().unwrap() = v;
     }
     if let Some(f) = cmd.facing.as_deref().and_then(Facing::parse) {
         info!("session facing → {f:?}");
         s.facing = f;
+    }
+    if let Some(preview) = cmd.preview {
+        info!("session preview → {preview}");
+        s.preview_enabled = preview;
     }
 }

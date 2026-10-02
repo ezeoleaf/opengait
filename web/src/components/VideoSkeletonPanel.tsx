@@ -6,6 +6,8 @@ interface VideoSkeletonPanelProps {
   metrics: GaitMetrics | null
   frameDataUrl: string | null
   live: boolean
+  /** When false, camera JPEG is not shown (skeleton on dark stage only). */
+  previewEnabled?: boolean
   sourceWidth?: number
   sourceHeight?: number
 }
@@ -18,6 +20,7 @@ export function VideoSkeletonPanel({
   metrics,
   frameDataUrl,
   live,
+  previewEnabled = true,
   sourceWidth = 1280,
   sourceHeight = 720,
 }: VideoSkeletonPanelProps) {
@@ -149,7 +152,11 @@ export function VideoSkeletonPanel({
           className={`h-2 w-2 rounded-full ${live ? 'animate-pulse bg-signal' : 'bg-mute'}`}
         />
         <span className="font-mono text-[11px] uppercase tracking-widest text-mute">
-          {live ? 'Live · 60 FPS overlay' : 'Offline'}
+          {live
+            ? previewEnabled
+              ? 'Live · video + overlay'
+              : 'Live · skeleton only'
+            : 'Offline'}
         </span>
       </div>
 
