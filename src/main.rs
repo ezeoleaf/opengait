@@ -304,7 +304,9 @@ fn run_pipeline(
             info!("demo phase → {}", phase.label());
             last_phase = phase;
         }
-        calibration.update(&pose);
+        if pose.person_detected {
+            calibration.update(&pose);
+        }
         let metrics = tracker.update(&pose, Some(&calibration), view);
 
         let include_preview = preview_on

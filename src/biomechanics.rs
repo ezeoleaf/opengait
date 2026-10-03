@@ -17,6 +17,14 @@ pub enum Landmark {
     Nose = 0,
     LeftShoulder = 11,
     RightShoulder = 12,
+    #[allow(dead_code)]
+    LeftElbow = 13,
+    #[allow(dead_code)]
+    RightElbow = 14,
+    #[allow(dead_code)]
+    LeftWrist = 15,
+    #[allow(dead_code)]
+    RightWrist = 16,
     LeftHip = 23,
     RightHip = 24,
     LeftKnee = 25,
@@ -70,6 +78,20 @@ pub struct PoseFrame {
     pub landmarks: Vec<Keypoint>,
     /// Active detector / tracking ROI (oriented square), if available.
     pub roi: Option<DetectorRoi>,
+    /// Model pose-presence score in \[0, 1\] (1.0 for synthetic).
+    #[serde(default = "default_presence")]
+    pub pose_presence: f32,
+    /// True when torso + at least one supporting leg look reliable enough for gait.
+    #[serde(default = "default_true")]
+    pub person_detected: bool,
+}
+
+fn default_presence() -> f32 {
+    1.0
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Oriented person ROI used for landmark cropping (debug overlay).
@@ -131,6 +153,45 @@ impl PoseFrame {
     }
 }
 
+/// Minimum landmark confidence for "visible enough for gait".
+pub const PERSON_LANDMARK_CONF: f32 = 0.45;
+/// BlazePose pose-presence gate (model scalar).
+pub const PERSON_PRESENCE_THRESH: f32 = 0.55;
+
+/// Decide whether a pose is trustworthy enough to drive biomechanics.
+///
+/// Requires a torso (hips + shoulders) and at least one lower-limb chain
+/// (hip–knee–ankle). Arms are not required for the gate, but they expand the
+/// tracking ROI when visible so swinging wrists are not cropped.
+pub fn assess_person_quality(landmarks: &[Keypoint], pose_presence: f32) -> bool {
+    if pose_presence < PERSON_PRESENCE_THRESH {
+        return false;
+    }
+    if landmarks.len() < 33 {
+        return false;
+    }
+    let conf = PERSON_LANDMARK_CONF;
+    let visible = |id: Landmark| {
+        landmarks
+            .get(id as usize)
+            .is_some_and(|k| k.is_visible(conf))
+    };
+
+    let torso = visible(Landmark::LeftHip)
+        && visible(Landmark::RightHip)
+        && visible(Landmark::LeftShoulder)
+        && visible(Landmark::RightShoulder);
+
+    let left_leg = visible(Landmark::LeftHip)
+        && visible(Landmark::LeftKnee)
+        && visible(Landmark::LeftAnkle);
+    let right_leg = visible(Landmark::RightHip)
+        && visible(Landmark::RightKnee)
+        && visible(Landmark::RightAnkle);
+
+    torso && (left_leg || right_leg)
+}
+
 /// Per-frame biomechanical metrics emitted to the dashboard.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GaitMetrics {
@@ -138,6 +199,10 @@ pub struct GaitMetrics {
     pub timestamp_secs: f64,
     /// Active camera viewpoint used for this sample.
     pub view: CameraView,
+    /// Whether the person passed the detection / landmark quality gate.
+    pub person_detected: bool,
+    /// Raw pose-presence score from the landmark model (1.0 in demo mode).
+    pub pose_presence: f32,
     // --- Sagittal (side) ---
     pub left_knee_flexion_deg: Option<f32>,
     pub right_knee_flexion_deg: Option<f32>,
@@ -207,12 +272,48 @@ impl GaitTracker {
     }
 
     /// Update tracker with a new pose and return computed metrics.
+    ///
+    /// When `pose.person_detected` is false, strike history is not advanced and
+    /// kinematic metrics are cleared (cadence holds the last rolling estimate).
     pub fn update(
         &mut self,
         pose: &PoseFrame,
         calibration: Option<&crate::calibration::Calibration>,
         view: CameraView,
     ) -> GaitMetrics {
+        if !pose.person_detected {
+            self.prune_strikes(pose.timestamp_secs);
+            let cadence_spm = cadence_from_strikes(
+                &self.left_strike_times,
+                &self.right_strike_times,
+                self.window_secs,
+            );
+            return GaitMetrics {
+                frame_index: pose.frame_index,
+                timestamp_secs: pose.timestamp_secs,
+                view,
+                person_detected: false,
+                pose_presence: pose.pose_presence,
+                left_knee_flexion_deg: None,
+                right_knee_flexion_deg: None,
+                torso_lean_deg: None,
+                left_overstride: None,
+                right_overstride: None,
+                hip_drop_deg: None,
+                shoulder_drop_deg: None,
+                trunk_lateral_lean_deg: None,
+                left_knee_valgus_deg: None,
+                right_knee_valgus_deg: None,
+                left_crossover_px: None,
+                right_crossover_px: None,
+                cadence_spm,
+                left_foot_strike: false,
+                right_foot_strike: false,
+                landmarks: pose.landmarks.clone(),
+                roi: pose.roi,
+            };
+        }
+
         let conf = 0.3;
 
         let left_knee = pose
@@ -287,6 +388,8 @@ impl GaitTracker {
             frame_index: pose.frame_index,
             timestamp_secs: pose.timestamp_secs,
             view,
+            person_detected: true,
+            pose_presence: pose.pose_presence,
             left_knee_flexion_deg: left_knee,
             right_knee_flexion_deg: right_knee,
             torso_lean_deg: torso_lean,
@@ -722,6 +825,8 @@ mod tests {
                 timestamp_secs: i as f64 * 0.016,
                 landmarks: landmarks.clone(),
                 roi: None,
+                pose_presence: 1.0,
+                person_detected: true,
             };
             let m = tracker.update(&pose, None, CameraView::Side);
             if m.left_foot_strike {
@@ -760,6 +865,8 @@ mod tests {
             timestamp_secs: 0.0,
             landmarks,
             roi: None,
+            pose_presence: 1.0,
+            person_detected: true,
         };
         let mut tracker = GaitTracker::new(5.0);
         let m = tracker.update(&pose, None, CameraView::Front);
@@ -767,5 +874,38 @@ mod tests {
         assert!(m.hip_drop_deg.unwrap() > 0.0); // right hip lower
         assert!(m.torso_lean_deg.is_none()); // sagittal lean unused in front view
         assert_eq!(m.view, CameraView::Front);
+        assert!(m.person_detected);
+    }
+
+    #[test]
+    fn person_quality_requires_torso_and_leg() {
+        let mut landmarks = vec![Keypoint::new(0.0, 0.0, 0.0); 33];
+        assert!(!assess_person_quality(&landmarks, 1.0));
+        landmarks[Landmark::LeftHip as usize] = Keypoint::new(80.0, 100.0, 1.0);
+        landmarks[Landmark::RightHip as usize] = Keypoint::new(120.0, 100.0, 1.0);
+        landmarks[Landmark::LeftShoulder as usize] = Keypoint::new(85.0, 40.0, 1.0);
+        landmarks[Landmark::RightShoulder as usize] = Keypoint::new(115.0, 40.0, 1.0);
+        landmarks[Landmark::LeftKnee as usize] = Keypoint::new(80.0, 150.0, 1.0);
+        landmarks[Landmark::LeftAnkle as usize] = Keypoint::new(80.0, 200.0, 1.0);
+        assert!(assess_person_quality(&landmarks, 0.9));
+        assert!(!assess_person_quality(&landmarks, 0.2));
+    }
+
+    #[test]
+    fn skipped_when_person_not_detected() {
+        let landmarks = vec![Keypoint::new(0.0, 0.0, 0.0); 33];
+        let pose = PoseFrame {
+            frame_index: 0,
+            timestamp_secs: 1.0,
+            landmarks,
+            roi: None,
+            pose_presence: 0.1,
+            person_detected: false,
+        };
+        let mut tracker = GaitTracker::new(5.0);
+        let m = tracker.update(&pose, None, CameraView::Side);
+        assert!(!m.person_detected);
+        assert!(m.torso_lean_deg.is_none());
+        assert!(!m.left_foot_strike);
     }
 }

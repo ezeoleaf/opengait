@@ -20,6 +20,7 @@ Real-time running gait analysis: camera → BlazePose ONNX → biomechanics → 
 - [x] Scripted synthetic demo reel (`--demo` / default offline) for screenshots & video
 - [x] Static project site (`site/`) + GitHub Pages workflow
 - [x] Foot-strike detection with EMA ankle smoothing + refractory window
+- [x] Person quality gate (skip biomechanics when torso/leg not reliable; arms expand ROI)
 - [x] JSON line stream on stdout + `ws://127.0.0.1:8080` metrics broadcast
 - [x] Frame width/height in WS envelope for dashboard scaling
 - [x] `scripts/fetch-model.sh` for landmark + detector ONNX

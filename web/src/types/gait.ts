@@ -41,6 +41,9 @@ export interface GaitMetrics {
   right_knee_valgus_deg?: number | null
   left_crossover_px?: number | null
   right_crossover_px?: number | null
+  /** False when detector / landmark quality gate rejects the frame. */
+  person_detected?: boolean
+  pose_presence?: number
   cadence_spm: number | null
   left_foot_strike: boolean
   right_foot_strike: boolean
@@ -86,6 +89,10 @@ export const Landmark = {
   Nose: 0,
   LeftShoulder: 11,
   RightShoulder: 12,
+  LeftElbow: 13,
+  RightElbow: 14,
+  LeftWrist: 15,
+  RightWrist: 16,
   LeftHip: 23,
   RightHip: 24,
   LeftKnee: 25,
@@ -101,6 +108,10 @@ export const Landmark = {
 /** Skeleton bone pairs for the overlay (works for side and frontal). */
 export const SKELETON_EDGES: Array<[number, number]> = [
   [Landmark.LeftShoulder, Landmark.RightShoulder],
+  [Landmark.LeftShoulder, Landmark.LeftElbow],
+  [Landmark.LeftElbow, Landmark.LeftWrist],
+  [Landmark.RightShoulder, Landmark.RightElbow],
+  [Landmark.RightElbow, Landmark.RightWrist],
   [Landmark.LeftShoulder, Landmark.LeftHip],
   [Landmark.RightShoulder, Landmark.RightHip],
   [Landmark.LeftHip, Landmark.RightHip],

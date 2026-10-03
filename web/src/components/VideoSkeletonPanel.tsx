@@ -158,6 +158,11 @@ export function VideoSkeletonPanel({
               : 'Live · skeleton only'
             : 'Offline'}
         </span>
+        {live && metrics && metrics.person_detected === false ? (
+          <span className="rounded border border-caution/40 bg-caution/15 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-caution">
+            No person
+          </span>
+        ) : null}
       </div>
 
       {metrics && (

@@ -46,6 +46,8 @@ impl PoseEstimator for SyntheticPose {
             timestamp_secs: t,
             landmarks,
             roi: None,
+            pose_presence: 1.0,
+            person_detected: true,
         })
     }
 }
@@ -81,6 +83,7 @@ pub fn open_estimator(
 #[cfg(feature = "onnx")]
 mod onnx_backend {
     use super::*;
+    use crate::biomechanics::{Keypoint, Landmark};
     use ort::session::Session;
     use ort::value::TensorRef;
     use std::path::Path;
@@ -89,8 +92,11 @@ mod onnx_backend {
     const LANDMARK_SIZE: usize = 256;
     const LANDMARK_STRIDE: usize = 5;
     const BODY_LANDMARKS: usize = 33;
-    const DETECT_EVERY: u32 = 20;
-    const SCORE_THRESH: f32 = 0.5;
+    const DETECT_EVERY: u32 = 15;
+    const SCORE_THRESH: f32 = 0.55;
+    /// Drop tracked ROI after this many failed detector polls.
+    const DETECT_MISS_LIMIT: u32 = 3;
+    const PRESENCE_THRESH: f32 = 0.55;
 
     /// Oriented square ROI in original frame pixels (MediaPipe-style).
     #[derive(Clone, Copy, Debug)]
@@ -140,6 +146,7 @@ mod onnx_backend {
         anchors: Vec<[f32; 2]>,
         roi: Option<OrientedRoi>,
         frames_since_detect: u32,
+        detect_misses: u32,
     }
 
     impl OnnxPose {
@@ -181,6 +188,7 @@ mod onnx_backend {
                 anchors: generate_anchors(),
                 roi: None,
                 frames_since_detect: DETECT_EVERY,
+                detect_misses: 0,
             })
         }
 
@@ -232,6 +240,10 @@ mod onnx_backend {
 
             let base = i * 12;
             let anchor = self.anchors[i];
+            // Box regressor (cy, cx, h, w) relative to anchor — used as size fallback.
+            let box_h = (coords[base + 2].abs() / scale) * fh;
+            let box_w = (coords[base + 3].abs() / scale) * fw;
+
             let mut kps = [[0.0f32; 2]; 4];
             for k in 0..4 {
                 let ox = coords[base + 4 + k * 2];
@@ -240,17 +252,18 @@ mod onnx_backend {
                 kps[k][1] = (oy / scale + anchor[1]) * fh;
             }
 
-            // kp0=hip, kp1=scale, kp2=shoulder (MediaPipe alignment points).
+            // Detector alignment points: hip, scale, shoulder (arms come from landmarks).
             let hip = kps[0];
             let scale_kp = kps[1];
             let shoulder = kps[2];
             let dist = ((hip[0] - scale_kp[0]).hypot(hip[1] - scale_kp[1])).max(1.0);
-            let size = (2.0 * dist * 1.25).max(64.0);
+            let size_from_kps = (2.0 * dist * 1.35).max(64.0);
+            // Prefer the larger of keypoint-span vs SSD box so arms/legs are less cropped.
+            let size = size_from_kps.max(box_h.max(box_w) * 1.15).max(64.0);
             let cx = (hip[0] + shoulder[0]) * 0.5;
             let cy = (hip[1] + shoulder[1]) * 0.5;
             let dx = shoulder[0] - hip[0];
             let dy = shoulder[1] - hip[1];
-            // Rotate so hip→shoulder aligns with image −Y (upright torso).
             let angle = dx.atan2(-dy);
             let roi = OrientedRoi {
                 cx,
@@ -258,7 +271,7 @@ mod onnx_backend {
                 size,
                 angle,
             };
-            tracing::debug!(best_score, ?roi, "detector oriented ROI");
+            tracing::debug!(best_score, size, size_from_kps, box_w, box_h, ?roi, "detector oriented ROI");
             Ok(Some(roi.clamp_to_frame(fw, fh)))
         }
     }
@@ -290,8 +303,14 @@ mod onnx_backend {
                         None => det.clamp_to_frame(fw, fh),
                     });
                     self.frames_since_detect = 0;
+                    self.detect_misses = 0;
                 } else {
+                    self.detect_misses = self.detect_misses.saturating_add(1);
                     self.frames_since_detect = self.frames_since_detect.saturating_add(1);
+                    if self.detect_misses >= DETECT_MISS_LIMIT {
+                        tracing::debug!("clearing ROI after repeated detector misses");
+                        self.roi = None;
+                    }
                 }
             } else {
                 self.frames_since_detect = self.frames_since_detect.saturating_add(1);
@@ -328,17 +347,26 @@ mod onnx_backend {
                 )
             })?;
 
-            if pose_presence < 0.4 {
+            if pose_presence < PRESENCE_THRESH {
                 for kp in &mut landmarks {
                     kp.confidence *= pose_presence;
                 }
             }
 
-            if let Some(tracked) = roi_from_landmarks(&landmarks, fw, fh) {
-                self.roi = Some(match self.roi {
-                    Some(prev) => prev.ema(tracked, 0.25).clamp_to_frame(fw, fh),
-                    None => tracked.clamp_to_frame(fw, fh),
-                });
+            let person_detected =
+                crate::biomechanics::assess_person_quality(&landmarks, pose_presence);
+
+            // Only refine ROI from landmarks when the person looks solid; include arms.
+            if person_detected {
+                if let Some(tracked) = roi_from_landmarks(&landmarks, fw, fh) {
+                    self.roi = Some(match self.roi {
+                        Some(prev) => prev.ema(tracked, 0.28).clamp_to_frame(fw, fh),
+                        None => tracked.clamp_to_frame(fw, fh),
+                    });
+                }
+            } else if pose_presence < PRESENCE_THRESH {
+                // Lost the person — force rediscovery on the next detect cycle.
+                self.frames_since_detect = DETECT_EVERY;
             }
 
             Ok(PoseFrame {
@@ -351,6 +379,8 @@ mod onnx_backend {
                     size: r.size,
                     angle_rad: r.angle,
                 }),
+                pose_presence,
+                person_detected,
             })
         }
     }
@@ -559,12 +589,36 @@ mod onnx_backend {
     }
 
     fn roi_from_landmarks(landmarks: &[Keypoint], fw: f32, fh: f32) -> Option<OrientedRoi> {
+        // Prefer torso + limbs (incl. elbows/wrists) so arm swing stays inside the crop.
+        const TRACK_IDS: &[usize] = &[
+            Landmark::Nose as usize,
+            Landmark::LeftShoulder as usize,
+            Landmark::RightShoulder as usize,
+            Landmark::LeftElbow as usize,
+            Landmark::RightElbow as usize,
+            Landmark::LeftWrist as usize,
+            Landmark::RightWrist as usize,
+            Landmark::LeftHip as usize,
+            Landmark::RightHip as usize,
+            Landmark::LeftKnee as usize,
+            Landmark::RightKnee as usize,
+            Landmark::LeftAnkle as usize,
+            Landmark::RightAnkle as usize,
+            Landmark::LeftHeel as usize,
+            Landmark::RightHeel as usize,
+            Landmark::LeftFootIndex as usize,
+            Landmark::RightFootIndex as usize,
+        ];
+
         let mut min_x = f32::MAX;
         let mut min_y = f32::MAX;
         let mut max_x = f32::MIN;
         let mut max_y = f32::MIN;
         let mut n = 0;
-        for kp in landmarks {
+        for &idx in TRACK_IDS {
+            let Some(kp) = landmarks.get(idx) else {
+                continue;
+            };
             if kp.confidence < 0.4 {
                 continue;
             }
@@ -579,11 +633,11 @@ mod onnx_backend {
         }
         let bw = (max_x - min_x).max(1.0);
         let bh = (max_y - min_y).max(1.0);
-        let side = bw.max(bh) * 1.35;
+        // Extra margin so wrists/ankles near the edge stay inside the landmark crop.
+        let side = bw.max(bh) * 1.55;
         let cx = (min_x + max_x) * 0.5;
         let cy = (min_y + max_y) * 0.5;
 
-        // Angle from mid-hip → mid-shoulder when available.
         let l_hip = landmarks.get(23).filter(|k| k.confidence >= 0.4);
         let r_hip = landmarks.get(24).filter(|k| k.confidence >= 0.4);
         let l_sh = landmarks.get(11).filter(|k| k.confidence >= 0.4);
