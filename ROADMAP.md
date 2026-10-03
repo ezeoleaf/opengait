@@ -21,6 +21,9 @@ Real-time running gait analysis: camera → BlazePose ONNX → biomechanics → 
 - [x] Static project site (`site/`) + GitHub Pages workflow
 - [x] Foot-strike detection with EMA ankle smoothing + refractory window
 - [x] Person quality gate (skip biomechanics when torso/leg not reliable; arms expand ROI)
+- [x] One Euro landmark temporal filter (before biomechanics; `--no-filter` to disable)
+- [x] Camera device picker (`--list-cameras`) + clearer macOS permission errors
+- [x] Pose backend selector (`--backend blazepose|movenet|yolo`) + COCO→BlazePose remap
 - [x] JSON line stream on stdout + `ws://127.0.0.1:8080` metrics broadcast
 - [x] Frame width/height in WS envelope for dashboard scaling
 - [x] `scripts/fetch-model.sh` for landmark + detector ONNX
@@ -29,16 +32,14 @@ Real-time running gait analysis: camera → BlazePose ONNX → biomechanics → 
 
 ## Next
 
-- [ ] Landmark temporal filter (1€ / Kalman) before biomechanics
-- [ ] Device picker CLI (`--list-cameras`) and clearer macOS permission errors
+- [ ] Wire MoveNet / YOLO-Pose ONNX graphs into `pose_backend` (remap already landed)
+- [ ] Tauri / sidecar packaging for a single native install
+- [ ] Homebrew formula via `homebrew-tap`
 
 ## Later
 
-- [ ] MoveNet / YOLO-Pose backends behind the same `PoseEstimator` trait
 - [ ] Multi-person select (treadmill lane / closest ROI)
 - [ ] Offline video file input (`--video run.mp4`) for batch analysis
 - [ ] Session recording to disk (JSONL + contact-frame stills)
-- [ ] Tauri / sidecar packaging for a single native install
-- [ ] Homebrew formula via `homebrew-tap`
 - [ ] Benchmarks: target sustained 60 FPS @ 720p on Apple Silicon
 - [ ] Optional GPU EP for `ort` (CoreML / CUDA)

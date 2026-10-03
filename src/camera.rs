@@ -125,22 +125,92 @@ pub fn open_capture(
         }
         #[cfg(not(feature = "camera"))]
         {
-            tracing::warn!(
-                "live camera requested but `camera` feature is disabled; using synthetic demo"
+            anyhow::bail!(
+                "live camera requested but the `camera` feature is disabled.\n\
+                 Rebuild with: cargo run --release --features camera,onnx -- --live …\n\
+                 Or run the synthetic demo: cargo run --release -- --demo"
             );
         }
     }
     Ok(Box::new(SyntheticCamera::new(config, view)))
 }
 
+/// One row from `--list-cameras`.
+#[derive(Debug, Clone)]
+pub struct CameraDeviceInfo {
+    pub index: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// Enumerate cameras for the CLI device picker.
+pub fn list_cameras() -> Result<Vec<CameraDeviceInfo>> {
+    #[cfg(feature = "camera")]
+    {
+        live::list_cameras_impl()
+    }
+    #[cfg(not(feature = "camera"))]
+    {
+        anyhow::bail!(
+            "camera listing requires the `camera` feature.\n\
+             Rebuild with: cargo run --release --features camera -- --list-cameras"
+        )
+    }
+}
 
 #[cfg(feature = "camera")]
 mod live {
     use super::*;
-    use anyhow::Context;
+    use anyhow::{bail, Context};
     use nokhwa::pixel_format::RgbFormat;
-    use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
+    use nokhwa::query;
+    use nokhwa::utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType};
     use nokhwa::Camera;
+
+    pub fn list_cameras_impl() -> Result<Vec<CameraDeviceInfo>> {
+        let infos = query(ApiBackend::Auto).map_err(|e| {
+            anyhow::anyhow!("failed to query cameras: {e}\n{}", mac_permission_hint())
+        })?;
+        if infos.is_empty() {
+            bail!("no cameras found.\n{}", mac_permission_hint());
+        }
+        Ok(infos
+            .into_iter()
+            .map(|info| CameraDeviceInfo {
+                index: format!("{}", info.index()),
+                name: info.human_name(),
+                description: info.description().to_string(),
+            })
+            .collect())
+    }
+
+    fn mac_permission_hint() -> &'static str {
+        "On macOS: System Settings → Privacy & Security → Camera — enable access for \
+         Terminal (or iTerm / your IDE). Quit and reopen the app after granting permission. \
+         Use `--list-cameras` to confirm the device index, then `--live --device N`."
+    }
+
+    fn map_open_error(err: impl std::fmt::Display, device: u32) -> anyhow::Error {
+        let msg = err.to_string();
+        let lower = msg.to_ascii_lowercase();
+        if lower.contains("permission")
+            || lower.contains("not authorized")
+            || lower.contains("denied")
+            || lower.contains("-10814")
+            || lower.contains("could not")
+        {
+            anyhow::anyhow!(
+                "could not open camera device {device}: {msg}\n{}",
+                mac_permission_hint()
+            )
+        } else {
+            anyhow::anyhow!(
+                "could not open camera device {device}: {msg}\n\
+                 Tip: run with `--list-cameras` to see available indexes.\n{}",
+                mac_permission_hint()
+            )
+        }
+    }
 
     pub struct NokhwaCamera {
         camera: Camera,
@@ -152,13 +222,18 @@ mod live {
     impl NokhwaCamera {
         pub fn open(config: CaptureConfig) -> Result<Self> {
             let index = CameraIndex::Index(config.device_index);
-            let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
-            let mut camera = Camera::new(index, requested).context("open camera")?;
+            let requested =
+                RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
+            let mut camera = Camera::new(index, requested)
+                .map_err(|e| map_open_error(e, config.device_index))?;
             camera
                 .set_resolution(nokhwa::utils::Resolution::new(config.width, config.height))
                 .ok();
             camera.set_frame_rate(config.fps).ok();
-            camera.open_stream().context("start camera stream")?;
+            camera
+                .open_stream()
+                .map_err(|e| map_open_error(e, config.device_index))
+                .context("start camera stream")?;
             Ok(Self {
                 camera,
                 config,
@@ -170,7 +245,10 @@ mod live {
 
     impl FrameSource for NokhwaCamera {
         fn next_frame(&mut self) -> Result<Option<Frame>> {
-            let buffer = self.camera.frame().context("grab frame")?;
+            let buffer = self
+                .camera
+                .frame()
+                .map_err(|e| map_open_error(e, self.config.device_index))?;
             let decoded = buffer.decode_image::<RgbFormat>().context("decode RGB")?;
             let frame = Frame {
                 width: decoded.width(),

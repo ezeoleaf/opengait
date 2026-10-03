@@ -98,6 +98,9 @@ cargo run --release -- --demo --preview-fps 15 --facing right
 ```bash
 ./scripts/fetch-model.sh
 
+# Discover device indexes (macOS: grant Camera permission to your terminal first)
+cargo run --release --features camera -- --list-cameras
+
 cargo run --release --features camera,onnx -- \
   --live --device 0 \
   --model models/blazepose_landmark_full.onnx \
@@ -116,8 +119,12 @@ Useful flags:
 | --- | --- |
 | `--demo` | Scripted synthetic reel (also default without `--live` / `--model`) |
 | `--live` | Use webcam (needs `--features camera`) |
+| `--list-cameras` | Print device indexes and exit |
 | `--device N` | Camera index (default `0`) |
+| `--backend blazepose\|movenet\|yolo` | Pose family (`movenet`/`yolo` remap-ready, ONNX not wired yet) |
 | `--model` / `--detector` | Landmark + detector ONNX paths |
+| `--no-filter` | Disable One Euro landmark smoothing |
+| `--filter-min-cutoff` / `--filter-beta` | Tune One Euro filter |
 | `--view side\|front\|back` | Initial camera viewpoint (override from web UI) |
 | `--facing left\|right\|auto` | Side-view run direction |
 | `--height-cm` | Enables overstride in centimetres |
@@ -142,7 +149,9 @@ open-gait/
 │   ├── main.rs          # CLI, WS server, pipeline
 │   ├── camera.rs        # Capture (live / synthetic)
 │   ├── demo.rs          # Scripted gait reel + stick-figure frames
+│   ├── filter.rs        # One Euro landmark temporal filter
 │   ├── pose.rs          # ONNX detector + landmarks
+│   ├── pose_backend.rs  # Backend selector + COCO→BlazePose remap
 │   ├── biomechanics.rs  # Side + frontal metrics
 │   ├── view.rs          # CameraView (side/front/back)
 │   ├── calibration.rs   # Facing + px→cm

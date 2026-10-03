@@ -8,6 +8,9 @@ demo:
 site:
 	cd site && python3 -m http.server 4173
 
+list-cameras:
+	cargo run --release --features camera -- --list-cameras
+
 run:
 	cargo run --release --features camera,onnx -- \
 	  --live --device 0 \
@@ -35,4 +38,4 @@ test:
 web:
 	cd web && npm run dev
 
-.PHONY: demo site run clean build clean-release clippy test web
+.PHONY: demo site list-cameras run clean build clean-release clippy test web

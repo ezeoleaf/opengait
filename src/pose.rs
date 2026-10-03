@@ -8,6 +8,7 @@
 use crate::biomechanics::PoseFrame;
 use crate::camera::Frame;
 use crate::demo;
+use crate::pose_backend::{unsupported_backend, PoseBackendKind};
 use crate::view::CameraView;
 use anyhow::{bail, Result};
 use std::sync::{Arc, Mutex};
@@ -52,31 +53,37 @@ impl PoseEstimator for SyntheticPose {
     }
 }
 
-/// Build a pose estimator. Uses ONNX when `model_path` is set and the
-/// `onnx` feature is enabled; otherwise falls back to the synthetic demo.
+/// Build a pose estimator for the selected backend.
 pub fn open_estimator(
     model_path: Option<&str>,
     detector_path: Option<&str>,
     view: Arc<Mutex<CameraView>>,
     fps: u32,
+    backend: PoseBackendKind,
 ) -> Result<Box<dyn PoseEstimator>> {
-    match model_path {
-        Some(path) => {
-            #[cfg(feature = "onnx")]
-            {
-                let _ = (view, fps);
-                return Ok(Box::new(OnnxPose::load(path, detector_path)?));
-            }
-            #[cfg(not(feature = "onnx"))]
-            {
-                let _ = (path, detector_path, view, fps);
-                bail!(
-                    "ONNX model requested but the `onnx` feature is not enabled. \
-                     Rebuild with `--features onnx` or omit `--model`."
-                );
-            }
+    match backend {
+        PoseBackendKind::MoveNet | PoseBackendKind::YoloPose => {
+            unsupported_backend(backend)?;
+            unreachable!()
         }
-        None => Ok(Box::new(SyntheticPose::new(view, fps))),
+        PoseBackendKind::BlazePose => match model_path {
+            Some(path) => {
+                #[cfg(feature = "onnx")]
+                {
+                    let _ = (view, fps);
+                    return Ok(Box::new(OnnxPose::load(path, detector_path)?));
+                }
+                #[cfg(not(feature = "onnx"))]
+                {
+                    let _ = (path, detector_path, view, fps);
+                    bail!(
+                        "ONNX model requested but the `onnx` feature is not enabled. \
+                         Rebuild with `--features onnx` or omit `--model`."
+                    );
+                }
+            }
+            None => Ok(Box::new(SyntheticPose::new(view, fps))),
+        },
     }
 }
 

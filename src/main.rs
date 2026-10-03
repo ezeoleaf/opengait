@@ -8,14 +8,18 @@ mod biomechanics;
 mod calibration;
 mod camera;
 mod demo;
+mod filter;
 mod pose;
+mod pose_backend;
 mod preview;
 mod view;
 
 use crate::biomechanics::GaitTracker;
 use crate::calibration::{Calibration, Facing};
-use crate::camera::{open_capture, CaptureConfig};
+use crate::camera::{list_cameras, open_capture, CaptureConfig};
+use crate::filter::{LandmarkFilter, OneEuroParams};
 use crate::pose::open_estimator;
+use crate::pose_backend::PoseBackendKind;
 use crate::preview::encode_preview_jpeg;
 use crate::view::CameraView;
 use anyhow::Result;
@@ -53,10 +57,19 @@ struct Args {
     #[arg(long)]
     live: bool,
 
+    /// List available camera devices and exit (requires `--features camera`).
+    #[arg(long)]
+    list_cameras: bool,
+
     /// Scripted synthetic demo reel (default when not using `--live` / `--model`).
     /// Cycles steady → overstride → high cadence → lean → frontal form.
     #[arg(long)]
     demo: bool,
+
+    /// Pose backend: blazepose (default) | movenet | yolo.
+    /// MoveNet / YOLO remap helpers exist; ONNX graphs are not wired yet.
+    #[arg(long, default_value = "blazepose")]
+    backend: String,
 
     /// Optional path to a BlazePose / MoveNet `.onnx` landmark model (`--features onnx`).
     #[arg(long)]
@@ -66,6 +79,18 @@ struct Args {
     /// next to `--model` when present.
     #[arg(long)]
     detector: Option<String>,
+
+    /// Disable the One Euro landmark temporal filter.
+    #[arg(long)]
+    no_filter: bool,
+
+    /// One Euro minimum cutoff (Hz). Lower = smoother when still.
+    #[arg(long, default_value_t = 1.0)]
+    filter_min_cutoff: f32,
+
+    /// One Euro speed coefficient (higher = less lag when moving).
+    #[arg(long, default_value_t = 0.007)]
+    filter_beta: f32,
 
     /// Camera viewpoint: side | front | back (overridable from the web UI).
     #[arg(long, default_value = "side")]
@@ -156,10 +181,43 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    if args.list_cameras {
+        match list_cameras() {
+            Ok(cams) => {
+                println!("Available cameras:");
+                for cam in cams {
+                    println!(
+                        "  [{}] {} — {}",
+                        cam.index,
+                        cam.name,
+                        if cam.description.is_empty() {
+                            "—"
+                        } else {
+                            &cam.description
+                        }
+                    );
+                }
+                println!("\nUse: --live --device <index>");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("{e:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let view = CameraView::parse(&args.view)
         .ok_or_else(|| anyhow::anyhow!("invalid --view {:?} (use side|front|back)", args.view))?;
     let facing = Facing::parse(&args.facing).ok_or_else(|| {
         anyhow::anyhow!("invalid --facing {:?} (use left|right|auto)", args.facing)
+    })?;
+    let backend = PoseBackendKind::parse(&args.backend).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid --backend {:?} (use blazepose|movenet|yolo)",
+            args.backend
+        )
     })?;
 
     let use_demo = args.demo || (!args.live && args.model.is_none());
@@ -176,6 +234,14 @@ async fn main() -> Result<()> {
             "synthetic demo reel enabled (70s cycle: steady → overstride → high-cadence → lean → frontal-form → recovery)"
         );
     }
+    info!("pose backend = {}", backend.as_str());
+
+    let filter_params = OneEuroParams {
+        min_cutoff: args.filter_min_cutoff,
+        beta: args.filter_beta,
+        d_cutoff: 1.0,
+    };
+    let filter_enabled = !args.no_filter;
 
     let (tx, _) = broadcast::channel::<String>(256);
 
@@ -219,6 +285,7 @@ async fn main() -> Result<()> {
                 live,
                 model.as_deref(),
                 detector.as_deref(),
+                backend,
                 session_pipe,
                 view_pipe,
                 window_secs,
@@ -226,6 +293,8 @@ async fn main() -> Result<()> {
                 preview_fps,
                 preview_width,
                 preview_quality,
+                filter_enabled,
+                filter_params,
                 tx_pipe,
             );
             let _ = done_tx.send(result);
@@ -250,6 +319,7 @@ fn run_pipeline(
     live: bool,
     model: Option<&str>,
     detector: Option<&str>,
+    backend: PoseBackendKind,
     session: Arc<Mutex<SessionConfig>>,
     view_slot: Arc<Mutex<CameraView>>,
     window_secs: f64,
@@ -257,12 +327,19 @@ fn run_pipeline(
     preview_fps: u32,
     preview_width: u32,
     preview_quality: u8,
+    filter_enabled: bool,
+    filter_params: OneEuroParams,
     tx: broadcast::Sender<String>,
 ) -> Result<()> {
     let fps = capture_cfg.fps;
     let mut source = open_capture(capture_cfg, live, Arc::clone(&view_slot))?;
-    let mut estimator = open_estimator(model, detector, Arc::clone(&view_slot), fps)?;
+    let mut estimator = open_estimator(model, detector, Arc::clone(&view_slot), fps, backend)?;
     let mut tracker = GaitTracker::new(window_secs);
+    let mut landmark_filter = if filter_enabled {
+        LandmarkFilter::new(filter_params)
+    } else {
+        LandmarkFilter::disabled()
+    };
 
     let (initial_facing, initial_height) = {
         let s = session.lock().unwrap();
@@ -280,12 +357,13 @@ fn run_pipeline(
     let mut last_phase = demo::phase_at(0.0);
 
     info!(
-        "pipeline started ({}x{} @ {} FPS, live={live}, view={:?}, facing={:?}, preview_fps={preview_fps})",
+        "pipeline started ({}x{} @ {} FPS, live={live}, view={:?}, facing={:?}, preview_fps={preview_fps}, filter={})",
         source.config().width,
         source.config().height,
         source.config().fps,
         *view_slot.lock().unwrap(),
         initial_facing,
+        landmark_filter.is_enabled(),
     );
 
     while let Some(frame) = source.next_frame()? {
@@ -298,7 +376,9 @@ fn run_pipeline(
             calibration.facing = facing;
         }
 
-        let pose = estimator.estimate(&frame, pipeline_start)?;
+        let mut pose = estimator.estimate(&frame, pipeline_start)?;
+        landmark_filter.apply(&mut pose);
+
         let phase = demo::phase_at(pose.timestamp_secs);
         if phase != last_phase {
             info!("demo phase → {}", phase.label());

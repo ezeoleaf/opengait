@@ -17,13 +17,9 @@ pub enum Landmark {
     Nose = 0,
     LeftShoulder = 11,
     RightShoulder = 12,
-    #[allow(dead_code)]
     LeftElbow = 13,
-    #[allow(dead_code)]
     RightElbow = 14,
-    #[allow(dead_code)]
     LeftWrist = 15,
-    #[allow(dead_code)]
     RightWrist = 16,
     LeftHip = 23,
     RightHip = 24,
